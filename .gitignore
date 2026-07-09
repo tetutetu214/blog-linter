@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 環境変数（実トークンはリポジトリ外の ~/.secrets/qiita.env に置く）
+.env
+*.env
+# テンプレートはコミット対象
+!.env.example
