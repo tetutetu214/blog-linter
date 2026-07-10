@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 from blog_linter.frontmatter_checker import load_tag_vocabulary
 from blog_linter.linter import lint_markdown, has_secret_issues
-from blog_linter import qiita_client
 
 
 def main():
@@ -138,6 +137,9 @@ def _print_issues(issues):
 
 
 def _run_post(args):
+    # check だけなら dotenv 等の投稿系依存なしで動くよう、post 実行時にのみ import する
+    from blog_linter import qiita_client
+
     filepath = Path(args.file)
     if not filepath.exists():
         print(f"エラー: ファイルが見つかりません: {filepath}")
