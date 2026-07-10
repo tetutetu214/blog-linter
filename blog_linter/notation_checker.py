@@ -1,6 +1,6 @@
 """表記ブレチェッカー: プリセットルールで表記の統一性をチェックする"""
 import re
-from blog_linter.secret_checker import LintIssue
+from blog_linter.models import LintIssue
 
 
 # 表記ブレルール: (推奨表記, [ブレ表記の正規表現パターン, ...])

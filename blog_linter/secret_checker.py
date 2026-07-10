@@ -1,17 +1,6 @@
 """機密情報チェッカー: 正規表現ベースでシークレットを検出する"""
 import re
-from dataclasses import dataclass
-
-
-@dataclass
-class LintIssue:
-    line_number: int
-    column: int
-    matched_text: str
-    category: str  # "secret" or "notation"
-    rule_name: str
-    message: str
-    suggestion: str = ""
+from blog_linter.models import LintIssue
 
 
 SECRET_PATTERNS = [
