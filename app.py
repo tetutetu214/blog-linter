@@ -1,10 +1,12 @@
 """Streamlit Web UI"""
 import streamlit as st
-from pathlib import Path
+from blog_linter.article_sources import (
+    QIITA_ARTICLES_PATH,
+    VAULT_DRAFTS_PATH,
+    list_markdown_files,
+)
 from blog_linter.linter import lint_markdown, has_secret_issues
 from blog_linter import qiita_client
-
-QIITA_REPO_PATH = Path("/home/tetutetu/qiita-articles")
 
 st.set_page_config(page_title="ブログ記事リンター", page_icon="🔍", layout="wide")
 st.title("ブログ記事リンター")
@@ -13,11 +15,27 @@ st.caption("機密情報の漏洩チェック & 表記ブレチェック")
 # 入力方法の選択
 input_method = st.radio(
     "入力方法を選択",
-    ["テキスト入力", "ファイルアップロード", "Qiita記事を選択"],
+    ["テキスト入力", "ファイルアップロード", "Qiita記事を選択", "Vault下書きを選択"],
     horizontal=True,
 )
 
 text = ""
+
+
+def _select_markdown_from(root, label, empty_hint):
+    """ディレクトリ配下の Markdown を選択させて中身を返す（見つからなければ警告）"""
+    md_files = list_markdown_files(root)
+    if not md_files:
+        st.warning(f"{label}が見つかりません: {root}\n\n{empty_hint}")
+        return ""
+    file_options = {str(f.relative_to(root)): f for f in md_files}
+    selected = st.selectbox(f"{label}を選択", list(file_options.keys()))
+    if not selected:
+        return ""
+    content = file_options[selected].read_text(encoding="utf-8")
+    st.code(content, language="markdown")
+    return content
+
 
 if input_method == "テキスト入力":
     text = st.text_area(
@@ -33,22 +51,16 @@ elif input_method == "ファイルアップロード":
         st.code(text, language="markdown")
 
 elif input_method == "Qiita記事を選択":
-    if QIITA_REPO_PATH.exists():
-        md_files = sorted(QIITA_REPO_PATH.rglob("*.md"))
-        if md_files:
-            # ファイルパスを相対パスで表示
-            file_options = {str(f.relative_to(QIITA_REPO_PATH)): f for f in md_files}
-            selected = st.selectbox("記事を選択", list(file_options.keys()))
-            if selected:
-                text = file_options[selected].read_text(encoding="utf-8")
-                st.code(text, language="markdown")
-        else:
-            st.warning("Markdownファイルが見つかりませんでした。")
-    else:
-        st.warning(
-            f"Qiita記事リポジトリが見つかりません: {QIITA_REPO_PATH}\n\n"
-            "テキスト入力またはファイルアップロードをご利用ください。"
-        )
+    text = _select_markdown_from(
+        QIITA_ARTICLES_PATH, "Qiita記事",
+        "テキスト入力またはファイルアップロードをご利用ください。",
+    )
+
+elif input_method == "Vault下書きを選択":
+    text = _select_markdown_from(
+        VAULT_DRAFTS_PATH, "Vault下書き",
+        "Obsidian の drafts/ に記事を置いてから再読み込みしてください。",
+    )
 
 # チェック実行（結果を session_state に保持し、投稿セクションで再利用する）
 if st.button("チェック実行", type="primary", disabled=not text):

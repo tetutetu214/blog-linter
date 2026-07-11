@@ -10,7 +10,7 @@
 - [x] 機密情報チェッカー（secret_checker.py）※2026-07-11 test_article.md で10件検出を確認
 - [x] 表記ブレチェッカー（notation_checker.py）※同上12件検出を確認
 - [x] CLI（__main__.py）
-- [ ] Streamlit UI（app.py）※ファイルは存在、動作未検証
+- [x] Streamlit UI（app.py）※2026-07-11 起動確認＋AppTest で検証、記事選択パスのバグ修正・Vault下書き選択を追加
 
 ## Qiita API 連携
 - [x] Qiita API クライアント（qiita_client.py）
@@ -33,6 +33,6 @@
 - [ ] 実 Vault の残指摘11件の解消（wikilink 未記載の古い worklog 10件 + wiki/concepts 1件。次回 kb-lint セッションで対応）
 
 ## スコープ外（次回以降の候補）
-- [ ] ブログ執筆フロー: Vault に drafts/ 新設 → worklog/wiki から記事ドラフト生成 → lint → qiita-articles へ出力 → qiita-cli 投稿
+- [x] ブログ執筆フロー: Vault drafts/ 新設＋執筆規則（Vault CLAUDE.md）＋ blog-review skill（機械 lint→内容レビュー→公開案内）を整備（2026-07-11。記事ドラフト生成は都度依頼ベース）
 - [ ] obsidian-qiita-s3 の再開（画像の S3+CloudFront 配信。ステージ0で停止中）
 - [ ] textlint 併用の検討（日本語文章品質: preset-ja-technical-writing。今回は構造チェック優先で見送り）
