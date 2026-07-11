@@ -2,8 +2,8 @@
 import argparse
 import sys
 from pathlib import Path
+from blog_linter.frontmatter_checker import load_tag_vocabulary
 from blog_linter.linter import lint_markdown, has_secret_issues
-from blog_linter import qiita_client
 
 
 def main():
@@ -13,7 +13,15 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
     check_parser = subparsers.add_parser("check", help="Markdownファイルをチェック")
-    check_parser.add_argument("file", type=str, help="チェック対象のMarkdownファイルパス")
+    check_parser.add_argument("file", type=str, help="チェック対象のファイルまたはディレクトリ")
+    check_parser.add_argument(
+        "--profile", choices=("qiita", "vault"), default="qiita",
+        help="チェック対象のプロファイル（デフォルト: qiita）",
+    )
+    check_parser.add_argument(
+        "--vault-root", default="/mnt/c/Users/lemon/Vault",
+        help="Vault ルートのパス",
+    )
 
     post_parser = subparsers.add_parser("post", help="Markdownファイルを Qiita に投稿")
     post_parser.add_argument("file", type=str, help="投稿対象のMarkdownファイルパス")
@@ -38,43 +46,100 @@ def main():
 def _run_check(args):
     filepath = Path(args.file)
     if not filepath.exists():
-        print(f"エラー: ファイルが見つかりません: {filepath}")
+        print(f"エラー: パスが見つかりません: {filepath}")
         sys.exit(1)
 
-    text = filepath.read_text(encoding="utf-8")
-    issues = lint_markdown(text)
+    vault_root = Path(args.vault_root)
+    tag_vocabulary = None
+    if args.profile == "vault":
+        try:
+            tag_vocabulary = load_tag_vocabulary(vault_root)
+        except FileNotFoundError as error:
+            print(f"エラー: {error}")
+            sys.exit(1)
 
-    if not issues:
+    if filepath.is_dir():
+        if args.profile != "vault":
+            print("エラー: ディレクトリ指定は vault プロファイルでのみ利用できます")
+            sys.exit(1)
+        files = _collect_vault_files(filepath, vault_root)
+    else:
+        files = [filepath]
+
+    all_issues = []
+    issues_by_file = []
+    for markdown_file in files:
+        text = markdown_file.read_text(encoding="utf-8")
+        issues = lint_markdown(
+            text,
+            profile=args.profile,
+            file_path=markdown_file,
+            vault_root=vault_root,
+            tag_vocabulary=tag_vocabulary,
+        )
+        if issues:
+            issues_by_file.append((markdown_file, issues))
+            all_issues.extend(issues)
+
+    if not all_issues:
         print("問題は見つかりませんでした。")
         sys.exit(0)
 
-    secret_issues = [i for i in issues if i.category == "secret"]
-    notation_issues = [i for i in issues if i.category == "notation"]
+    for markdown_file, issues in issues_by_file:
+        if len(files) > 1 or args.profile == "vault":
+            print(f"\n--- {markdown_file} ---")
+        _print_issues(issues)
 
-    if secret_issues:
-        print(f"\n{'='*60}")
-        print(f"  機密情報の検出: {len(secret_issues)} 件")
-        print(f"{'='*60}")
-        for issue in secret_issues:
-            print(f"  L{issue.line_number}:{issue.column}  [{issue.rule_name}]")
-            print(f"    {issue.message}")
-            print(f"    → {issue.suggestion}")
-            print()
-
-    if notation_issues:
-        print(f"\n{'='*60}")
-        print(f"  表記ブレの検出: {len(notation_issues)} 件")
-        print(f"{'='*60}")
-        for issue in notation_issues:
-            print(f"  L{issue.line_number}:{issue.column}  [{issue.rule_name}]")
-            print(f"    {issue.message}")
-            print()
-
-    print(f"合計: {len(issues)} 件の問題が見つかりました。")
+    print(f"合計: {len(all_issues)} 件の問題が見つかりました。")
     sys.exit(1)
 
 
+def _collect_vault_files(path: Path, vault_root: Path) -> list[Path]:
+    """Vault の対象領域から Markdown ファイルを収集する"""
+    allowed_roots = {"wiki", "worklog", "reports", "projects", "docs"}
+    excluded_parts = {"raw", ".obsidian", ".claude"}
+    files = []
+    for markdown_file in path.rglob("*.md"):
+        try:
+            relative_path = markdown_file.resolve().relative_to(vault_root.resolve())
+        except ValueError:
+            continue
+        parts = relative_path.parts
+        if len(parts) < 2 or parts[0] not in allowed_roots:
+            continue
+        if any(part in excluded_parts for part in parts):
+            continue
+        files.append(markdown_file)
+    return sorted(files)
+
+
+def _print_issues(issues):
+    """既存形式に合わせてカテゴリ別に指摘を表示する"""
+    category_labels = {
+        "secret": "機密情報の検出",
+        "notation": "表記ブレの検出",
+        "frontmatter": "Vault ルールの検出",
+    }
+
+    for category, label in category_labels.items():
+        category_issues = [issue for issue in issues if issue.category == category]
+        if not category_issues:
+            continue
+        print(f"\n{'='*60}")
+        print(f"  {label}: {len(category_issues)} 件")
+        print(f"{'='*60}")
+        for issue in category_issues:
+            print(f"  L{issue.line_number}:{issue.column}  [{issue.rule_name}]")
+            print(f"    {issue.message}")
+            if issue.suggestion:
+                print(f"    → {issue.suggestion}")
+            print()
+
+
 def _run_post(args):
+    # check だけなら dotenv 等の投稿系依存なしで動くよう、post 実行時にのみ import する
+    from blog_linter import qiita_client
+
     filepath = Path(args.file)
     if not filepath.exists():
         print(f"エラー: ファイルが見つかりません: {filepath}")
