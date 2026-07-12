@@ -9,3 +9,6 @@ venv/
 *.env
 # テンプレートはコミット対象
 !.env.example
+
+# Node.js（textlint 用。lock ファイルはコミット対象）
+node_modules/

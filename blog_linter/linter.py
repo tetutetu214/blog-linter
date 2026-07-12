@@ -1,6 +1,8 @@
 """リンター統合モジュール"""
 from pathlib import Path
+import tempfile
 
+from blog_linter.ai_writing_checker import check_ai_writing
 from blog_linter.frontmatter_checker import check_frontmatter
 from blog_linter.models import LintIssue
 from blog_linter.notation_checker import check_notation
@@ -22,6 +24,17 @@ def lint_markdown(
         issues.extend(check_secrets(text))
     if "notation" in checks:
         issues.extend(check_notation(text))
+    if "ai_writing" in checks:
+        if file_path is not None:
+            issues.extend(check_ai_writing(file_path))
+        else:
+            # 投稿前チェックなどパスがない呼び出しでも textlint を実行する。
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".md", encoding="utf-8"
+            ) as temporary_file:
+                temporary_file.write(text)
+                temporary_file.flush()
+                issues.extend(check_ai_writing(Path(temporary_file.name)))
     if "frontmatter" in checks:
         if file_path is None or vault_root is None or tag_vocabulary is None:
             raise ValueError(

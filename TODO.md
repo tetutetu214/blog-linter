@@ -10,6 +10,7 @@
 - [x] 機密情報チェッカー（secret_checker.py）※2026-07-11 test_article.md で10件検出を確認
 - [x] 表記ブレチェッカー（notation_checker.py）※同上12件検出を確認
 - [x] CLI（__main__.py）
+- [x] AI 文体チェッカー（ai_writing_checker.py、textlint preset-ai-writing 統合）※2026-07-12 qiita プロファイルのみ
 - [ ] Streamlit UI（app.py）※ファイルは存在、動作未検証
 
 ## Qiita API 連携
