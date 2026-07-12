@@ -9,8 +9,11 @@
 - 2026-07-11 後方互換の設計（--profile 省略時は qiita デフォルトで既存挙動を壊さない）— 理解度テスト合格（PR直前）
 - 2026-07-11 vault から表記ブレを外した観測駆動の判断（実測185件ノイズ、表記統一は記事化時に qiita で）— 理解度テスト合格（PR直前）
 - 2026-07-11 遅延 import の目的（check を dotenv 非依存にして週次 kb-lint を素の python3 で回す）— 理解度テスト合格（PR直前）
+- 2026-07-12 textlint のルール/プリセット機構（本体は検査ロジックを持たず npm ルールを .textlintrc で有効化、プリセットは詰め合わせで個別 on/off 可）/ 形態素解析ルールは Python 移植不可のため subprocess 統合を選定 / 未インストール環境は検出スキップ＋明示報告 — 理解度テスト合格
 
 ## 決定事項
+
+- 2026-07-12 **textlint を採用（方針転換）**。2026-07-10 の不採用判断は preset-ja-technical-writing が対象。今回は @textlint-ja/textlint-rule-preset-ai-writing（AI文体検出、kuromoji 形態素解析依存で Python 移植不可）のための採用で、当時想定した「必要になれば後から併用」に該当。Node.js 依存が増えるが未導入環境では graceful degradation でスキップする
 
 - 2026-07-11 **vault プロファイルから notation（表記ブレ）を除外**。実 Vault 検収で表記ブレ185件がノイズ化（過去の内部ノートに「Amazon DynamoDB」フル表記を強制する形になる）。vault の関心は機密混入防止と構造の健全性に絞り、表記統一は記事化時に qiita プロファイルで掛ける分業とした（観測駆動の判断）
 - 2026-07-11 frontmatter パーサのブロックリスト対応は tags 限定だと sources で誤検知する（premise-check.md で実測）。値が空のキーはすべてブロックリスト開始とみなす実装に修正

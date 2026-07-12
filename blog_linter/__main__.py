@@ -8,7 +8,7 @@ from blog_linter.linter import lint_markdown, has_secret_issues
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ブログ記事リンター - 機密情報・表記ブレチェック"
+        description="ブログ記事リンター - 機密情報・表記ブレ・AI 文体チェック"
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -118,6 +118,7 @@ def _print_issues(issues):
     category_labels = {
         "secret": "機密情報の検出",
         "notation": "表記ブレの検出",
+        "ai_writing": "AI 文体の検出",
         "frontmatter": "Vault ルールの検出",
     }
 
