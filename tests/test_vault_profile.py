@@ -96,3 +96,33 @@ def test_ディレクトリ走査で各種違反を検出する(tmp_path, capsys
         "タグ語彙", "author 必須", "frontmatter 必須", "sources 必須",
         "wikilink 必須", "worklog 命名規則", "reports 命名規則", "調査日と期限",
     ))
+
+
+def test_適用開始日より前のworklogはwikilinkが無くても指摘しない(tmp_path, capsys):
+    vocabulary = tmp_path / ".claude" / "tag-vocabulary.txt"
+    vocabulary.parent.mkdir()
+    vocabulary.write_text("python\n", encoding="utf-8")
+    old_worklog = tmp_path / "worklog" / "2026-06-30.md"
+    old_worklog.parent.mkdir()
+    old_worklog.write_text("---\nauthor: claude\n---\n本文だけ", encoding="utf-8")
+
+    code = _run_check([
+        str(tmp_path), "--profile", "vault", "--vault-root", str(tmp_path)
+    ])
+    assert code == 0
+    assert "wikilink 必須" not in capsys.readouterr().out
+
+
+def test_適用開始日以降のworklogはwikilinkが無いと指摘する(tmp_path, capsys):
+    vocabulary = tmp_path / ".claude" / "tag-vocabulary.txt"
+    vocabulary.parent.mkdir()
+    vocabulary.write_text("python\n", encoding="utf-8")
+    new_worklog = tmp_path / "worklog" / "2026-07-01.md"
+    new_worklog.parent.mkdir()
+    new_worklog.write_text("---\nauthor: claude\n---\n本文だけ", encoding="utf-8")
+
+    code = _run_check([
+        str(tmp_path), "--profile", "vault", "--vault-root", str(tmp_path)
+    ])
+    assert code == 1
+    assert "wikilink 必須" in capsys.readouterr().out

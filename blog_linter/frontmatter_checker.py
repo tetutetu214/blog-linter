@@ -4,6 +4,10 @@ from pathlib import Path
 
 from blog_linter.models import LintIssue
 
+# worklog の wikilink 必須ルールの適用開始日（ISO 形式の文字列比較で判定）
+# ルール整備前の過去分（2026-06 以前）は免除する。2026-07-18 kb-lint で決定
+WORKLOG_WIKILINK_RULE_START = "2026-07-01"
+
 
 def load_tag_vocabulary(vault_root: Path) -> set[str]:
     """Vault のタグ語彙ファイルを読み込む"""
@@ -144,13 +148,17 @@ def check_frontmatter(
             ))
 
     if parts and parts[0] == "worklog":
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}\.md", file_path.name):
+        name_match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\.md", file_path.name)
+        if not name_match:
             issues.append(_issue(
                 "worklog 命名規則",
                 "worklog のファイル名は YYYY-MM-DD.md 形式にしてください",
                 matched_text=file_path.name,
             ))
-        if wikilink_count < 1:
+        # wikilink ルールはルール整備日以降の worklog にのみ適用する
+        # （それ以前の過去分はバックフィルせず免除。日付が読めない名前は適用側に倒す）
+        rule_applies = name_match is None or name_match.group(1) >= WORKLOG_WIKILINK_RULE_START
+        if rule_applies and wikilink_count < 1:
             issues.append(_issue(
                 "wikilink 必須",
                 "worklog の本文には wikilink が1つ以上必要です",
