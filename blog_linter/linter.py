@@ -2,7 +2,11 @@
 from pathlib import Path
 import tempfile
 
-from blog_linter.ai_writing_checker import check_ai_writing
+from blog_linter.ai_writing_checker import (
+    BLOG_TEXTLINT_CONFIG,
+    TEXTLINT_CONFIG,
+    check_ai_writing,
+)
 from blog_linter.frontmatter_checker import check_frontmatter
 from blog_linter.models import LintIssue
 from blog_linter.notation_checker import check_notation
@@ -25,8 +29,11 @@ def lint_markdown(
     if "notation" in checks:
         issues.extend(check_notation(text))
     if "ai_writing" in checks:
+        config_path = (
+            BLOG_TEXTLINT_CONFIG if profile == "blog" else TEXTLINT_CONFIG
+        )
         if file_path is not None:
-            issues.extend(check_ai_writing(file_path))
+            issues.extend(check_ai_writing(file_path, config_path=config_path))
         else:
             # 投稿前チェックなどパスがない呼び出しでも textlint を実行する。
             with tempfile.NamedTemporaryFile(
@@ -34,7 +41,10 @@ def lint_markdown(
             ) as temporary_file:
                 temporary_file.write(text)
                 temporary_file.flush()
-                issues.extend(check_ai_writing(Path(temporary_file.name)))
+                issues.extend(check_ai_writing(
+                    Path(temporary_file.name),
+                    config_path=config_path,
+                ))
     if "frontmatter" in checks:
         if file_path is None or vault_root is None or tag_vocabulary is None:
             raise ValueError(

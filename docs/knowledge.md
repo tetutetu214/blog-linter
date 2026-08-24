@@ -21,3 +21,5 @@
 - 2026-07-10 vault プロファイルを追加。タグ語彙の正本は Vault 側 `/mnt/c/Users/lemon/Vault/.claude/tag-vocabulary.txt`（プレーンテキスト採用。PyYAML 依存を増やさないため）
 - 2026-07-10 `raw/` は人間専用領域のため lint 対象外。`.obsidian/` `.claude/` も走査除外
 - 2026-07-10 ブログ執筆フロー（Vault drafts/ → 記事生成 → qiita 投稿）と obsidian-qiita-s3 再開は今回スコープ外（TODO.md に記載）
+
+- 2026-08-25 **blog プロファイル新設（blog-site 用）で preset-ja-technical-writing を導入**。checks は ("secrets", "ai_writing")。notation は Qiita 表記規約用、frontmatter は blog-site 側の Astro zod スキーマが fail-closed で担うため含めない。textlint 設定は既存 .textlintrc.json（qiita）と新設 .textlintrc.blog.json（ai-writing + ja-technical-writing）で分離し、qiita/vault の挙動は不変（検証: blog 設定で sentence-length / max-ten 検出、qiita 設定で同ファイル指摘ゼロ）。実装は Codex（gpt-5.6-sol）、依存は textlint-rule-preset-ja-technical-writing@12.0.2

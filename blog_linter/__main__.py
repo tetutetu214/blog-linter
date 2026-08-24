@@ -15,7 +15,7 @@ def main():
     check_parser = subparsers.add_parser("check", help="Markdownファイルをチェック")
     check_parser.add_argument("file", type=str, help="チェック対象のファイルまたはディレクトリ")
     check_parser.add_argument(
-        "--profile", choices=("qiita", "vault"), default="qiita",
+        "--profile", choices=("qiita", "blog", "vault"), default="qiita",
         help="チェック対象のプロファイル（デフォルト: qiita）",
     )
     check_parser.add_argument(

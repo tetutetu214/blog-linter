@@ -36,4 +36,4 @@
 ## スコープ外（次回以降の候補）
 - [ ] ブログ執筆フロー: Vault に drafts/ 新設 → worklog/wiki から記事ドラフト生成 → lint → qiita-articles へ出力 → qiita-cli 投稿
 - [ ] obsidian-qiita-s3 の再開（画像の S3+CloudFront 配信。ステージ0で停止中）
-- [ ] textlint 併用の検討（日本語文章品質: preset-ja-technical-writing。今回は構造チェック優先で見送り）
+- [x] textlint 併用の検討（日本語文章品質: preset-ja-technical-writing）→ 2026-08-25 blog プロファイル新設で導入（blog-site 用。qiita/vault は従来設定のまま）

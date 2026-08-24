@@ -9,6 +9,7 @@ from blog_linter.models import LintIssue
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 TEXTLINT_CONFIG = REPOSITORY_ROOT / ".textlintrc.json"
+BLOG_TEXTLINT_CONFIG = REPOSITORY_ROOT / ".textlintrc.blog.json"
 TEXTLINT_BINARY = REPOSITORY_ROOT / "node_modules" / ".bin" / "textlint"
 
 
@@ -31,7 +32,10 @@ def _short_rule_name(rule_id: object) -> str:
     return rule_id.rsplit("/", maxsplit=1)[-1]
 
 
-def check_ai_writing(file_path: Path) -> list[LintIssue]:
+def check_ai_writing(
+    file_path: Path,
+    config_path: Path = TEXTLINT_CONFIG,
+) -> list[LintIssue]:
     """対象ファイルを textlint で検査し、共通の指摘型に変換する"""
     if shutil.which("npx") is None or not TEXTLINT_BINARY.exists():
         return [_skip_issue(
@@ -43,7 +47,7 @@ def check_ai_writing(file_path: Path) -> list[LintIssue]:
         "--no-install",
         "textlint",
         "--config",
-        str(TEXTLINT_CONFIG),
+        str(config_path),
         "-f",
         "json",
         str(file_path.resolve()),
