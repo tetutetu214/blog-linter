@@ -43,3 +43,10 @@
 - [ ] ブログ執筆フロー: Vault に drafts/ 新設 → worklog/wiki から記事ドラフト生成 → lint → qiita-articles へ出力 → qiita-cli 投稿
 - [ ] obsidian-qiita-s3 の再開（画像の S3+CloudFront 配信。ステージ0で停止中）
 - [x] textlint 併用の検討（日本語文章品質: preset-ja-technical-writing）→ 2026-08-25 blog プロファイル新設で導入（blog-site 用。qiita/vault は従来設定のまま）
+
+## マージ後に残った課題（2026-09-19、PR #5 マージ時点）
+- [ ] 表記ブレ「Lambda → AWS Lambda」が実記事で 140 件出る。うち 46% が同一座標の完全重複（notation_checker.py:21 の 2 変種が両方 IGNORECASE で二重ヒット）。1 記事 1 回の集約か、blog プロファイルでの緩和を検討する
+- [ ] blog-voice から回ってきた未実装ルール 4 件（~/.claude/skills/blog-voice/linter-candidates.md）: ニワトリの表記ゆれ / 非公式訳語の禁止（状態機械→ステートマシン）/ 節の冒頭が「まず、」/ 同一小節に「（出典:」3 回以上
+- [ ] tests/test_blog_profile.py の一部がトートロジー（辞書リテラルの写し）または実装署名に密結合
+- [ ] .mdx の連続 import 行が 1 段落に融合して sentence-length に当たる誤検知 1 件（JSX タグ行は誤検知 0 件）
+- [ ] textlint の column は行内桁でなく文書内オフセット。表示が誤解を招く
