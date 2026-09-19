@@ -1,6 +1,7 @@
 """textlint を使って AI らしい文章パターンを検出する"""
 import json
 from pathlib import Path
+import tempfile
 import shutil
 import subprocess
 
@@ -42,6 +43,29 @@ def check_ai_writing(
             "textlint 未導入のため AI 文体チェックをスキップしました"
         )]
 
+    # textlint は .md 以外（ブログ記事の .mdx 等）を無言でスキップし、
+    # 指摘 0 件・終了コード 0 を返す。偽のクリーン判定になるため、
+    # 拡張子が .md でなければ同じ内容を .md の一時ファイルへ写して検査する。
+    # 内容は一字一句同じなので行番号・桁はそのまま元ファイルに対応する。
+    with tempfile.TemporaryDirectory() as work_dir:
+        target = file_path.resolve()
+        if target.suffix.lower() != ".md":
+            copied = Path(work_dir) / (target.stem + ".md")
+            try:
+                copied.write_bytes(target.read_bytes())
+            except OSError as error:
+                return [_skip_issue(
+                    f"一時ファイルを作れなかったため AI 文体チェックをスキップしました: {error}"
+                )]
+            target = copied
+        return _run_textlint(target, config_path)
+
+
+def _run_textlint(
+    file_path: Path,
+    config_path: Path,
+) -> list[LintIssue]:
+    """textlint を実行して結果を共通の指摘型に変換する"""
     command = [
         "npx",
         "--no-install",
