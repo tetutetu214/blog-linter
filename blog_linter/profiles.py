@@ -2,6 +2,7 @@
 
 PROFILE_CHECKS: dict[str, tuple[str, ...]] = {
     "qiita": ("secrets", "notation", "ai_writing"),
+    "blog": ("secrets", "notation", "ai_writing"),
     # vault に notation を含めない理由: 内部ノートに公開記事水準の表記統一を
     # 強制すると過去ログへの指摘がノイズになる（2026-07-11 実測185件）。
     # 表記ブレは記事化するときに qiita プロファイルで掛ける。
