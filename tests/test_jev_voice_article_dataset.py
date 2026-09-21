@@ -15,6 +15,7 @@ from experiments.jev_voice.build_article_dataset import (
     generate_report,
     read_git_blob,
     split_into_sections,
+    validate_article_sources,
     validate_records,
     visible_character_count,
 )
@@ -215,6 +216,82 @@ def _valid_article_records() -> list[dict[str, object]]:
                 }
             )
     return records
+
+
+def _section_record(source, variant, label, index):
+    text = f"{source.slug} の {variant} 第{index}節です。"
+    return {
+        "id": f"{source.slug}:{variant}:section:{index}",
+        "article": source.slug,
+        "split": source.split,
+        "variant": variant,
+        "label": label,
+        "granularity": "section",
+        "heading": f"見出し{index}",
+        "section_index": index,
+        "commit": (
+            source.draft_commit
+            if variant == "draft"
+            else source.published_commit
+        ),
+        "source_path": (
+            source.draft_path
+            if variant == "draft"
+            else source.published_path
+        ),
+        "text": text,
+        "chars": visible_character_count(text),
+    }
+
+
+def test_節が片方の版にしかないときはValueErrorを出す():
+    records = _valid_article_records()
+    source = ARTICLE_SOURCES[0]
+    records.append(_section_record(source, "published", "human", 0))
+
+    with pytest.raises(ValueError, match="片方の版にしかありません"):
+        validate_records(records)
+
+
+def test_節が両方の版にあるときは通る():
+    records = _valid_article_records()
+    source = ARTICLE_SOURCES[0]
+    records.append(_section_record(source, "draft", "ai", 0))
+    records.append(_section_record(source, "published", "human", 0))
+
+    validate_records(records)
+
+
+def test_初稿と公開版の本文が同一のときはValueErrorを出す():
+    records = _valid_article_records()
+    slug = ARTICLE_SOURCES[0].slug
+    same = "まったく同じ本文です。"
+    for record in records:
+        if record["article"] == slug and record["granularity"] == "article":
+            record["text"] = same
+            record["chars"] = visible_character_count(same)
+
+    with pytest.raises(ValueError, match="本文が同一です"):
+        validate_records(records)
+
+
+def test_記事表のsplitがTRAINTEST定数と食い違うときはValueErrorを出す(
+    monkeypatch,
+):
+    # 表そのものを書き換えた状況を作る（定数と表の両方がずれていても
+    # 気づけることを確かめる）
+    from dataclasses import replace
+
+    import experiments.jev_voice.build_article_dataset as module
+
+    sources = list(ARTICLE_SOURCES)
+    index = next(i for i, s in enumerate(sources) if s.split == "train")
+    broken = replace(sources[index], split="test")
+    sources[index] = broken
+    monkeypatch.setitem(module.ARTICLE_BY_SLUG, broken.slug, broken)
+
+    with pytest.raises(ValueError, match="食い違っています"):
+        validate_article_sources(sources)
 
 
 def test_表にない記事があるときはValueErrorを出す():

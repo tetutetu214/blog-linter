@@ -672,6 +672,23 @@ def validate_article_sources(
             + ", ".join(sorted(overlap))
         )
 
+    # 表の split と TRAIN/TEST 定数がずれると、漏れの無い分割のつもりで
+    # 実際には片側へ寄った状態を黙って生成してしまう。
+    for source in article_sources:
+        if source.slug in TRAIN_ARTICLES:
+            expected_split = "train"
+        elif source.slug in TEST_ARTICLES:
+            expected_split = "test"
+        else:
+            raise ValueError(
+                f"train/test のどちらにも属さない記事です: {source.slug}"
+            )
+        if source.split != expected_split:
+            raise ValueError(
+                f"記事 {source.slug} の split が TRAIN/TEST 定数と"
+                "食い違っています"
+            )
+
 
 def _make_record(
     source: ArticleSource,
@@ -719,6 +736,12 @@ def validate_records(
     seen_ids: set[str] = set()
     article_variants: dict[str, Counter[str]] = {
         slug: Counter() for slug in ARTICLE_BY_SLUG
+    }
+    section_counts: dict[str, Counter[str]] = {
+        slug: Counter() for slug in ARTICLE_BY_SLUG
+    }
+    article_texts: dict[str, dict[str, str]] = {
+        slug: {} for slug in ARTICLE_BY_SLUG
     }
     split_articles: dict[str, set[str]] = {
         "train": set(),
@@ -787,6 +810,7 @@ def validate_records(
             if heading is not None or section_index is not None:
                 raise ValueError("記事レコードの節情報は null にしてください")
             article_variants[article][variant] += 1
+            article_texts[article][variant] = text
         elif granularity == "section":
             if not isinstance(heading, str) or not heading:
                 raise ValueError("節レコードの heading が空です")
@@ -796,6 +820,7 @@ def validate_records(
                 or section_index < 0
             ):
                 raise ValueError("節レコードの section_index が不正です")
+            section_counts[article][variant] += 1
         else:
             raise ValueError(f"granularity が不正です: {granularity}")
 
@@ -810,6 +835,28 @@ def validate_records(
         if variants != Counter({"draft": 1, "published": 1}):
             raise ValueError(
                 f"記事 {article} に draft/published の両方が揃っていません"
+            )
+
+    # 片側のラベルだけ節が消えると、節の評価がラベルの偏りにすり替わる。
+    # 抽出や除外規則が片側にだけ効いた事故なので、黙って通さない。
+    for article, counts in section_counts.items():
+        draft_sections = counts["draft"]
+        published_sections = counts["published"]
+        if (draft_sections == 0) != (published_sections == 0):
+            raise ValueError(
+                f"記事 {article} の節が片方の版にしかありません: "
+                f"draft={draft_sections}, published={published_sections}"
+            )
+
+    # 両版の本文が同一なら、表の sha を取り違えて同じ版を 2 回読んでいる。
+    # ラベルだけが違う同一テキストは評価として無意味なので止める。
+    for article, texts in article_texts.items():
+        if (
+            len(texts) == 2
+            and texts["draft"].strip() == texts["published"].strip()
+        ):
+            raise ValueError(
+                f"記事 {article} の初稿と公開版の本文が同一です"
             )
 
 
