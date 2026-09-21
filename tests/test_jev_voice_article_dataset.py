@@ -221,7 +221,7 @@ def _valid_article_records() -> list[dict[str, object]]:
 def _section_record(source, variant, label, index):
     text = f"{source.slug} の {variant} 第{index}節です。"
     return {
-        "id": f"{source.slug}:{variant}:section:{index}",
+        "id": f"{source.slug}:{variant}:section-{index}",
         "article": source.slug,
         "split": source.split,
         "variant": variant,

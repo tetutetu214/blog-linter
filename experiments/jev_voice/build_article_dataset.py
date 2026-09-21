@@ -927,6 +927,13 @@ def _assemble_dataset(
                 )
 
     validate_records(records)
+    # 全記事で節が消えた場合は記事ごとの排他判定を素通りするので、
+    # 実際に組み立てる経路でだけ止める（合成データの単体検証は縛らない）。
+    if not any(
+        record["granularity"] == "section" for record in records
+    ):
+        raise ValueError("節レコードが 1 件もありません")
+
     payload: dict[str, object] = {
         "generated_at": generated_at or _timestamp(),
         "articles": [source.as_dict() for source in article_sources],
