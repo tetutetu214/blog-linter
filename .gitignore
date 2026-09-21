@@ -12,3 +12,6 @@ venv/
 
 # Node.js（textlint 用。lock ファイルはコミット対象）
 node_modules/
+
+# Jev 文体判定の実験データ（未公開記事の本文と文体指摘の生ログを含むため公開しない）
+experiments/jev_voice/dataset.json
