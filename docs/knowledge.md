@@ -13,6 +13,11 @@
 
 ## 決定事項
 
+- 2026-09-21 **Jev 文体判定の評価セットを文単位から記事単位へ方針転換**。旧 `experiments/jev_voice/build_dataset.py`（文単位）はレビュー不採用。normal が記事本文を句点で割った完全文、ng/ok が corrections.md の引用断片だったため、「末尾が句点か」だけで 191/198 = 96% 判別できた（文体ではなく出典を当てるだけの評価セット）。新方式は `build_article_dataset.py` で、同じ記事の **初稿（Claude が書いた版、label ai）と公開版（本人が直して公開に至った版、label human）** を git blob から取る。話題が同じで文体だけ違うので対比として成立し、両版を同一の抽出器へ通すので表層の食い違いが構造的に入らない。旧スクリプトは記録として残す（削除するなら PR 前に本人判断）
+- 2026-09-21 **初稿コミットは自動検出せず記事ごとの表で固定**。「その記事の最初のコミット」を機械的に取ると aws-lambda-durable-functions は骨子 1KB（94eb16a）を拾う。blog-with-astro は公開時に hello-world から改名されており版ごとにパスが違う。公開版も sha で固定して再生成の再現性を担保した
+- 2026-09-21 **節レコードの除外規則**: 可視 200 文字未満、および初稿・公開版で正規化類似度 0.98 以上（本人が直していない節は、どちらのラベルでも同じ文章になり評価にならない）。実データでの版間最大類似度は 0.501 で除外 0 件、つまり本人は全節に手を入れている
+- 2026-09-21 **accuracy は多数派ベースラインと並べないと誤読する**。section 粒度は ai 32 / human 21 なので、全部 ai と答えるだけで 0.604。最良の表層特徴（1文あたりの平均文字数）が 0.755 なので上回りは 0.15。一方 article 粒度は 10 件しかなく 1 件の取り違えが 0.100 動くため、0.900 の警告は「弱い評価セット」の根拠にならない。レポートに件数・ベースライン・1件あたりの重みを併記する実装にした
+
 - 2026-07-12 **textlint を採用（方針転換）**。2026-07-10 の不採用判断は preset-ja-technical-writing が対象。今回は @textlint-ja/textlint-rule-preset-ai-writing（AI文体検出、kuromoji 形態素解析依存で Python 移植不可）のための採用で、当時想定した「必要になれば後から併用」に該当。Node.js 依存が増えるが未導入環境では graceful degradation でスキップする
 
 - 2026-07-11 **vault プロファイルから notation（表記ブレ）を除外**。実 Vault 検収で表記ブレ185件がノイズ化（過去の内部ノートに「Amazon DynamoDB」フル表記を強制する形になる）。vault の関心は機密混入防止と構造の健全性に絞り、表記統一は記事化時に qiita プロファイルで掛ける分業とした（観測駆動の判断）
@@ -23,3 +28,5 @@
 - 2026-07-10 ブログ執筆フロー（Vault drafts/ → 記事生成 → qiita 投稿）と obsidian-qiita-s3 再開は今回スコープ外（TODO.md に記載）
 
 - 2026-08-25 **blog プロファイル新設（blog-site 用）で preset-ja-technical-writing を導入**。checks は ("secrets", "notation", "ai_writing")。frontmatter は blog-site 側の Astro zod スキーマが fail-closed で担うため含めない。当初案は notation を「Qiita 表記規約用」として除外していたが、reviewer の反証（notation_checker の中身はサーバー長音・AWS 正式名など汎用の技術表記ルールで、blog-site spec.md も blog の警告に notation を明記）で追加に修正。sentence-length は article-format.md の「80字」に合わせ preset 既定 100 から 80 に上書き。textlint 設定は既存 .textlintrc.json（qiita）と新設 .textlintrc.blog.json（ai-writing + ja-technical-writing）で分離し、qiita/vault の挙動は不変（検証: blog 設定で sentence-length / max-ten 検出、qiita 設定で同ファイル指摘ゼロ）。実装は Codex（gpt-5.6-sol）、依存は textlint-rule-preset-ja-technical-writing@12.0.2
+
+- 2026-09-21 Codex 委譲時のハマり: この環境には `python` コマンドが無く、`python3` にも pytest が入っていない。pytest は `.venv/bin/python -m pytest` で動く（uv 管理）。Codex は 2 回テスト実行に失敗してから uv キャッシュ経由で通しており、委譲プロンプトに実行系を書いておくと 1 回で済む
