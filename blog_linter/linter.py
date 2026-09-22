@@ -18,7 +18,7 @@ from blog_linter.secret_checker import check_secrets
 
 def lint_markdown(
     text: str,
-    profile: str = "qiita",
+    profile: str = "blog",
     file_path: Path | None = None,
     vault_root: Path | None = None,
     tag_vocabulary: set[str] | None = None,

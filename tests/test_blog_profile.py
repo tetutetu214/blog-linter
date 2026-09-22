@@ -122,19 +122,18 @@ def test_blogプロファイルはEufyとURLとライブラリ名を指摘しな
     assert _blog_rule_issues(text, "brand-capitalization") == []
 
 
-def test_URLとMarkdownリンク先の表記ブレはどのプロファイルでも指摘しない():
+def test_blogプロファイルはURLとMarkdownリンク先の表記ブレを指摘しない():
     text = (
         "https://docs.aws.amazon.com/lambda/latest/dg/lambda-nodejs.html\n"
         "[クライアント](https://github.com/bropat/eufy-security-client)"
     )
 
-    for profile in ("qiita", "blog"):
-        issues = check_notation(text, profile=profile)
+    issues = check_notation(text, profile="blog")
 
-        assert not any(
-            issue.rule_name in {"表記ブレ: Node.js", "表記ブレ: GitHub"}
-            for issue in issues
-        )
+    assert not any(
+        issue.rule_name in {"表記ブレ: Node.js", "表記ブレ: GitHub"}
+        for issue in issues
+    )
 
 
 def test_blogプロファイルはにわとりと鶏を指摘する():
@@ -158,26 +157,6 @@ def test_blogプロファイルは公式の用語を指摘しない():
         "ステートマシンを実装します。",
         "unofficial-translation",
     ) == []
-
-
-def test_blogプロファイルは用語を並べるスラッシュ表記を指摘する():
-    issues = _blog_rule_issues(
-        "OS/ランタイムを選択します。",
-        "slash-coordination",
-    )
-
-    assert [issue.matched_text for issue in issues] == ["OS/ランタイム"]
-
-
-def test_blogプロファイルはURLとパスと日付のスラッシュを指摘しない():
-    text = (
-        "https://example.com/OS/runtime を参照します。\n"
-        "src/components/Button.tsx を開きます。\n"
-        "/usr/local/bin に置きます。\n"
-        "2026/09/22 に実施します。"
-    )
-
-    assert _blog_rule_issues(text, "slash-coordination") == []
 
 
 def test_blogプロファイルは英数字と日本語の直接隣接を指摘する():
@@ -367,7 +346,6 @@ def test_blog固有ルールはfrontmatter内を指摘しない():
         "brand-capitalization",
         "chicken-notation",
         "unofficial-translation",
-        "slash-coordination",
         "alnum-japanese-spacing",
         "open-kanji",
         "style-mixing",
@@ -399,7 +377,6 @@ def test_blog固有ルールはコードブロック内を指摘しない():
         "brand-capitalization",
         "chicken-notation",
         "unofficial-translation",
-        "slash-coordination",
         "alnum-japanese-spacing",
         "open-kanji",
         "style-mixing",
@@ -424,7 +401,6 @@ def test_blog固有の語句ルールはインラインコード内を指摘し�
         "brand-capitalization",
         "chicken-notation",
         "unofficial-translation",
-        "slash-coordination",
         "alnum-japanese-spacing",
         "open-kanji",
         "comma-sentence-join",
@@ -453,7 +429,6 @@ def test_blog固有ルールは複数行のalt属性とtitle属性内を指摘�
         "brand-capitalization",
         "chicken-notation",
         "unofficial-translation",
-        "slash-coordination",
         "alnum-japanese-spacing",
         "open-kanji",
         "style-mixing",
@@ -468,3 +443,346 @@ def test_blog固有ルールは複数行のalt属性とtitle属性内を指摘�
         issues = lint_markdown(text, profile="blog")
 
     assert not rule_names.intersection(issue.rule_name for issue in issues)
+
+
+def test_Markdownリンク先の閉じ括弧より後ろは本文として検査する():
+    text = "[資料](https://example.com)のeufyと状態機械を確認します。"
+
+    assert _blog_rule_issues(text, "brand-capitalization")
+    assert _blog_rule_issues(text, "unofficial-translation")
+
+
+def test_インラインコード内のタグ断片は後続本文の除外状態を変えない():
+    text = (
+        '`<img alt="` は記法の例です。\n'
+        "eufy を確認出来ます。\n"
+        "Lambda を使います。"
+    )
+
+    assert _blog_rule_issues(text, "brand-capitalization")
+    assert _blog_rule_issues(text, "open-kanji")
+    assert _blog_rule_issues(text, "aws-first-mention")
+
+
+def test_一般動詞で終わる常体を文体混在として指摘する():
+    text = "設定します。\n確認します。\nログを読む。"
+
+    issues = _blog_rule_issues(text, "style-mixing")
+
+    assert [issue.line_number for issue in issues] == [3]
+
+
+def test_常体が多数なら敬体を全件指摘する():
+    text = "保存する。\nログを読む。\n完了です。"
+
+    issues = _blog_rule_issues(text, "style-mixing")
+
+    assert [issue.line_number for issue in issues] == [3]
+
+
+def test_敬体と常体が同数でも両方を指摘する():
+    text = "設定します。\nログを読む。"
+
+    issues = _blog_rule_issues(text, "style-mixing")
+
+    assert [issue.line_number for issue in issues] == [1, 2]
+
+
+def test_qiitaのURLとバッククォート判定は変更前の挙動を保つ():
+    url_issues = check_notation(
+        "https://example.com/NodeJS",
+        profile="qiita",
+    )
+    closed_issues = check_notation("``サーバ``", profile="qiita")
+    unclosed_issues = check_notation("`サーバ", profile="qiita")
+
+    assert len(url_issues) == 3
+    assert len(closed_issues) == 1
+    assert unclosed_issues == []
+    # 既定プロファイルは blog（Qiita からブログへ移行済み、2026-09-23）。
+    assert check_notation("``サーバ``") == check_notation("``サーバ``", profile="blog")
+
+
+def test_短い内側フェンスは長いコードブロックを閉じない():
+    text = (
+        "````md\n"
+        "```\n"
+        "````\n"
+        "eufy と 状態機械を確認出来ます。"
+    )
+
+    assert _blog_rule_issues(text, "brand-capitalization")
+    assert _blog_rule_issues(text, "unofficial-translation")
+
+
+def test_frontmatter内のフェンスは本文のコード状態を変えない():
+    text = (
+        "---\n"
+        "description: |\n"
+        "  ```\n"
+        "---\n"
+        "eufy と 状態機械を確認します。"
+    )
+
+    assert _blog_rule_issues(text, "brand-capitalization")
+    assert _blog_rule_issues(text, "unofficial-translation")
+
+
+def test_情報文字列付きフェンス行は終了フェンスとして扱わない():
+    text = (
+        "```text\n"
+        "```not-a-closer\n"
+        "eufy を確認出来ます。\n"
+        "```"
+    )
+
+    assert _blog_rule_issues(text, "brand-capitalization") == []
+    assert _blog_rule_issues(text, "open-kanji") == []
+
+
+def test_引用とリスト内のフェンスコードを本文として検査しない():
+    quote = "> ```text\n> eufy を確認出来ます。\n> ```"
+    list_item = "- ```text\n  eufy を確認出来ます。\n  ```"
+
+    for text in (quote, list_item):
+        assert _blog_rule_issues(text, "brand-capitalization") == []
+        assert _blog_rule_issues(text, "open-kanji") == []
+
+
+def test_複数行インラインコードを本文として検査しない():
+    text = "`eufy\n状態機械を確認出来ます。`"
+
+    assert _blog_rule_issues(text, "brand-capitalization") == []
+    assert _blog_rule_issues(text, "unofficial-translation") == []
+    assert _blog_rule_issues(text, "open-kanji") == []
+
+
+def test_本数の異なるバッククォートはコードスパンにしない():
+    text = "``eufy```"
+
+    assert _blog_rule_issues(text, "brand-capitalization")
+
+
+def test_Markdown画像のaltとtitleを本文として検査しない():
+    text = '![eufy](./image.png "状態機械を確認出来ます。")'
+
+    assert _blog_rule_issues(text, "brand-capitalization") == []
+    assert _blog_rule_issues(text, "unofficial-translation") == []
+    assert _blog_rule_issues(text, "open-kanji") == []
+
+
+def test_JSX式のalt属性を本文として検査しない():
+    text = '<img alt={"eufy にわとり 実行出来ます EC2に"} />'
+    excluded_rules = {
+        "brand-capitalization",
+        "chicken-notation",
+        "open-kanji",
+        "alnum-japanese-spacing",
+        "aws-first-mention",
+    }
+
+    with patch("blog_linter.linter.check_ai_writing", return_value=[]):
+        issues = lint_markdown(text, profile="blog")
+
+    assert not excluded_rules.intersection(
+        issue.rule_name for issue in issues
+    )
+
+
+def test_JSX式内の不等号はタグを閉じず後続alt属性を除外する():
+    text = (
+        '<img src={width > 100 ? large : small} alt="eufy" />\n'
+        "状態機械を確認します。"
+    )
+
+    assert _blog_rule_issues(text, "brand-capitalization") == []
+    assert _blog_rule_issues(text, "unofficial-translation")
+
+
+def test_URLとMarkdownリンク先の開く漢字を指摘しない():
+    text = "https://example.com/出来る\n[説明](./出来る.md)"
+
+    assert _blog_rule_issues(text, "open-kanji") == []
+
+
+def test_frontmatterのブロックスカラー内区切りで終了しない():
+    text = (
+        "---\n"
+        "description: |\n"
+        "  ---\n"
+        "  eufy を確認出来ます。\n"
+        "---\n"
+        "本文です。"
+    )
+
+    assert _blog_rule_issues(text, "brand-capitalization") == []
+    assert _blog_rule_issues(text, "open-kanji") == []
+
+
+def test_AWS略称の否定宣言を肯定宣言として扱わない():
+    text = "これ以降は Lambda と表記しません。\nLambda を使います。"
+
+    assert len(_blog_rule_issues(text, "aws-first-mention")) == 1
+
+
+def test_AWS略称を探す説明文を宣言として扱わない():
+    text = "以下の例では Lambda という表記を探します。\nLambda を使います。"
+
+    assert len(_blog_rule_issues(text, "aws-first-mention")) == 1
+
+
+def test_AWS正式名との比較を略称宣言として扱わない():
+    text = "Lambda と AWS Lambda の違いを調べます。"
+
+    assert len(_blog_rule_issues(text, "aws-first-mention")) == 1
+
+
+def test_AWS略称の肯定宣言は改行をまたいでも成立する():
+    text = (
+        "AWS Lambda（これ以降は\n"
+        "Lambda と表記する）を使います。\n"
+        "Lambda を使います。"
+    )
+
+    assert _blog_rule_issues(text, "aws-first-mention") == []
+
+
+def test_AWS以外を明示したlambdaとIAMをAWS略称として扱わない():
+    text = (
+        "Python の lambda 式を使います。\n"
+        "Google Cloud の IAM を使います。\n"
+        "Azure の IAM を確認します。"
+    )
+
+    assert _blog_rule_issues(text, "aws-first-mention") == []
+
+
+def test_AWS文脈のIAMは初出略称として指摘する():
+    text = "AWS 環境で IAM を使います。"
+
+    issues = _blog_rule_issues(text, "aws-first-mention")
+
+    assert [issue.matched_text for issue in issues] == ["IAM"]
+
+
+def test_open_kanjiは漢字語に含まれる事を部分一致で置換しない():
+    text = "仕事が出来る。手仕事が出来る。出来高と出来事と為替を確認する。"
+
+    assert _blog_rule_issues(text, "open-kanji") == []
+
+
+def test_chicken_notationは複合語の鶏を部分一致で置換しない():
+    text = "養鶏場と鶏肉加工場を見学します。"
+
+    assert _blog_rule_issues(text, "chicken-notation") == []
+
+
+def test_comma_sentence_joinはまたはの列挙を指摘しない():
+    text = "入力（必須）、または出力（任意）を指定します。"
+
+    assert _blog_rule_issues(text, "comma-sentence-join") == []
+
+
+def test_style_mixingは外側パイプの有無によらず表内の完全文を数える():
+    tables = (
+        "設定します。\n確認します。\n\n"
+        "項目 | 説明\n--- | ---\n手順 | 操作する。",
+        "設定します。\n確認します。\n\n"
+        "| 項目 | 説明 |\n| --- | --- |\n| 手順 | 操作する。 |",
+    )
+
+    for text in tables:
+        issues = _blog_rule_issues(text, "style-mixing")
+        assert len(issues) == 1
+        assert issues[0].line_number == 6
+
+
+def test_style_mixingは補足が続く箇条書き内の完全文を数える():
+    text = "設定します。\n確認します。\n- 操作する。（補足）"
+
+    issues = _blog_rule_issues(text, "style-mixing")
+
+    assert len(issues) == 1
+    assert issues[0].line_number == 3
+
+
+def test_slash_coordinationルールは用語らしいスラッシュにも存在しない():
+    text = (
+        "TCP/IP と A/B テストを確認します。\n"
+        "CPU/GPU/TPU を比較します。\n"
+        "読み込み/書き込みを制限します。"
+    )
+
+    assert _blog_rule_issues(text, "slash-coordination") == []
+
+
+def test_alt属性内の見出し文字列で出典の小節を分割しない():
+    text = (
+        "## 根拠\n"
+        "一（出典: A）\n"
+        "二（出典: B）\n"
+        '<img alt="\n'
+        "## ダミー\n"
+        '" />\n'
+        "三（出典: C）"
+    )
+
+    issues = _blog_rule_issues(text, "citation-density")
+
+    assert [issue.line_number for issue in issues] == [1]
+
+
+def test_コード除外は目印を外すと同じ語を指摘する():
+    protected = "~~~text\neufy\n~~~"
+    exposed = "eufy"
+
+    assert _blog_rule_issues(protected, "brand-capitalization") == []
+    assert _blog_rule_issues(exposed, "brand-capitalization")
+
+
+def test_インラインコード除外は目印を外すと同じ語を指摘する():
+    protected = "`eufy`"
+    exposed = "eufy"
+
+    assert _blog_rule_issues(protected, "brand-capitalization") == []
+    assert _blog_rule_issues(exposed, "brand-capitalization")
+
+
+def test_frontmatter除外は目印を外すと同じ語を指摘する():
+    protected = "---\ntitle: eufy\n---\n本文です。"
+    exposed = "title: eufy\n本文です。"
+
+    assert _blog_rule_issues(protected, "brand-capitalization") == []
+    assert _blog_rule_issues(exposed, "brand-capitalization")
+
+
+def test_URL除外は目印を外すと同じ語を指摘する():
+    protected = "https://example.com/eufy"
+    exposed = "example.com/eufy"
+
+    assert _blog_rule_issues(protected, "brand-capitalization") == []
+    assert _blog_rule_issues(exposed, "brand-capitalization")
+
+
+def test_Markdown画像除外は目印を外すと同じ語を指摘する():
+    protected = "![eufy](./image.png)"
+    exposed = "eufy"
+
+    assert _blog_rule_issues(protected, "brand-capitalization") == []
+    assert _blog_rule_issues(exposed, "brand-capitalization")
+
+
+def test_JSX属性除外は目印を外すと同じ語を指摘する():
+    protected = '<img alt={"eufy"} />'
+    exposed = "eufy"
+
+    assert _blog_rule_issues(protected, "brand-capitalization") == []
+    assert _blog_rule_issues(exposed, "brand-capitalization")
+
+
+def test_ラベル除外は目印を外すと同じ文体を指摘する():
+    protected = "設定します。\n# 操作する。"
+    exposed = "設定します。\n操作する。"
+
+    assert _blog_rule_issues(protected, "style-mixing") == []
+    assert _blog_rule_issues(exposed, "style-mixing")

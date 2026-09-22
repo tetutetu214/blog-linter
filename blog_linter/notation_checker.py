@@ -2,9 +2,8 @@
 import re
 
 from blog_linter.markdown_utils import (
-    excluded_line_indexes,
-    non_prose_ranges_by_line,
-    span_overlaps_ranges,
+    mask_ranges,
+    non_prose_ranges,
 )
 from blog_linter.models import LintIssue
 
@@ -69,7 +68,7 @@ BLOG_NOTATION_RULES = [
     },
     {
         "preferred": "ニワトリ",
-        "variants": [r"にわとり", r"鶏"],
+        "variants": [r"にわとり", r"(?<![一-鿿々〆ヶ])鶏(?![一-鿿々〆ヶ])"],
         "note": "カタカナ表記に統一します",
         "rule_name": "chicken-notation",
     },
@@ -108,21 +107,14 @@ _BLOG_EXCLUDED_BASE_RULES = {
     "Amazon EKS",
 }
 _JAPANESE_CHARACTER_CLASS = "ぁ-んァ-ヶ一-鿿々〆ヶー"
-_SLASH_JAPANESE_TERM = r"(?:[ぁ-ん]+|[ァ-ヶー]+|[一-鿿々〆ヶ]+)"
-_SLASH_TERM = rf"(?:[A-Za-z][A-Za-z0-9+#-]*|[0-9]+|{_SLASH_JAPANESE_TERM})"
-_SLASH_COORDINATION_PATTERN = re.compile(
-    rf"(?<![A-Za-z0-9{_JAPANESE_CHARACTER_CLASS}/])"
-    rf"(?P<left>{_SLASH_TERM})/(?P<right>{_SLASH_TERM})"
-    rf"(?![A-Za-z0-9/])"
-)
 _ALNUM_JAPANESE_BOUNDARY_PATTERN = re.compile(
     rf"(?:(?<=[A-Za-z0-9])(?=[{_JAPANESE_CHARACTER_CLASS}])|"
     rf"(?<=[{_JAPANESE_CHARACTER_CLASS}])(?=[A-Za-z0-9]))"
 )
 
 
-def _is_in_code_block(lines: list[str], line_idx: int) -> bool:
-    """コードブロック内かどうかを判定"""
+def _legacy_is_in_code_block(lines: list[str], line_idx: int) -> bool:
+    """Qiita 変更前と同じ方法でコードブロック内か判定する"""
     in_block = False
     for i in range(line_idx):
         stripped = lines[i].strip()
@@ -131,26 +123,24 @@ def _is_in_code_block(lines: list[str], line_idx: int) -> bool:
     return in_block
 
 
-def _is_in_inline_code(line: str, start: int, end: int) -> bool:
-    """インラインコード内かどうかを判定"""
+def _legacy_is_in_inline_code(line: str, start: int) -> bool:
+    """Qiita 変更前と同じ方法でインラインコード内か判定する"""
     before = line[:start]
     backtick_count = before.count("`")
     return backtick_count % 2 == 1
 
 
-def check_notation(text: str, profile: str = "qiita") -> list[LintIssue]:
+def check_notation(text: str, profile: str = "blog") -> list[LintIssue]:
     """テキスト内の表記ブレを検出する"""
+    if profile != "blog":
+        return _check_legacy_notation(text)
+
     issues = []
     lines = text.split("\n")
-    excluded_lines = excluded_line_indexes(lines) if profile == "blog" else set()
-    ranges_by_line = non_prose_ranges_by_line(
-        lines,
-        include_urls=True,
-        include_link_destinations=True,
-        include_mdx_attributes=profile == "blog",
-    )
+    ranges = non_prose_ranges(text)
+    masked_lines = mask_ranges(text, ranges).split("\n")
 
-    for rule in _notation_rules_for_profile(profile):
+    for rule in _notation_rules_for_profile("blog"):
         preferred = rule["preferred"]
         note = rule.get("note", "")
         case_sensitive = rule.get("case_sensitive", False)
@@ -160,19 +150,9 @@ def check_notation(text: str, profile: str = "qiita") -> list[LintIssue]:
             flags = 0 if case_sensitive else re.IGNORECASE
             pattern = re.compile(variant_pattern, flags)
 
-            for line_idx, line in enumerate(lines):
-                if line_idx in excluded_lines:
-                    continue
-                if _is_in_code_block(lines, line_idx):
-                    continue
-
-                for match in pattern.finditer(line):
-                    if span_overlaps_ranges(
-                        match.start(),
-                        match.end(),
-                        ranges_by_line[line_idx],
-                    ):
-                        continue
+            for line_idx, masked_line in enumerate(masked_lines):
+                line = lines[line_idx]
+                for match in pattern.finditer(masked_line):
                     if _matches_excluded_term(line, match.start(), rule):
                         continue
 
@@ -200,17 +180,59 @@ def check_notation(text: str, profile: str = "qiita") -> list[LintIssue]:
                         suggestion=preferred,
                     ))
 
-    if profile == "blog":
-        issues.extend(_check_slash_coordination(
-            lines,
-            excluded_lines,
-            ranges_by_line,
-        ))
-        issues.extend(_check_alnum_japanese_spacing(
-            lines,
-            excluded_lines,
-            ranges_by_line,
-        ))
+    issues.extend(_check_alnum_japanese_spacing(lines, masked_lines))
+
+    return issues
+
+
+def _check_legacy_notation(text: str) -> list[LintIssue]:
+    """main 版と同じ Qiita 向け表記チェックを実行する"""
+    issues = []
+    lines = text.split("\n")
+
+    for rule in NOTATION_RULES:
+        preferred = rule["preferred"]
+        note = rule.get("note", "")
+        case_sensitive = rule.get("case_sensitive", False)
+        context_words = rule.get("context_words", [])
+
+        for variant_pattern in rule["variants"]:
+            flags = 0 if case_sensitive else re.IGNORECASE
+            pattern = re.compile(variant_pattern, flags)
+
+            for line_idx, line in enumerate(lines):
+                if _legacy_is_in_code_block(lines, line_idx):
+                    continue
+
+                for match in pattern.finditer(line):
+                    if _legacy_is_in_inline_code(line, match.start()):
+                        continue
+
+                    matched_text = match.group(0)
+                    if matched_text == preferred:
+                        continue
+
+                    if context_words:
+                        context_window = "\n".join(
+                            lines[max(0, line_idx - 2):line_idx + 3]
+                        ).lower()
+                        if not any(
+                            word in context_window for word in context_words
+                        ):
+                            continue
+
+                    issues.append(LintIssue(
+                        line_number=line_idx + 1,
+                        column=match.start() + 1,
+                        matched_text=matched_text,
+                        category="notation",
+                        rule_name=f"表記ブレ: {preferred}",
+                        message=(
+                            f"「{matched_text}」→「{preferred}」に統一を推奨。"
+                            f"{note}"
+                        ),
+                        suggestion=preferred,
+                    ))
 
     return issues
 
@@ -237,85 +259,15 @@ def _matches_excluded_term(line: str, start: int, rule: dict) -> bool:
     )
 
 
-def _check_slash_coordination(
-    lines: list[str],
-    excluded_lines: set[int],
-    ranges_by_line: list[list[tuple[int, int]]],
-) -> list[LintIssue]:
-    issues = []
-    for line_index, line in enumerate(lines):
-        if line_index in excluded_lines:
-            continue
-        for match in _SLASH_COORDINATION_PATTERN.finditer(line):
-            if span_overlaps_ranges(
-                match.start(),
-                match.end(),
-                ranges_by_line[line_index],
-            ):
-                continue
-            left = match.group("left")
-            right = match.group("right")
-            if _looks_like_path_or_date(line, match, left, right):
-                continue
-            matched_text = match.group(0)
-            suggestion = f"{left} と {right}"
-            issues.append(LintIssue(
-                line_number=line_index + 1,
-                column=match.start() + 1,
-                matched_text=matched_text,
-                category="notation",
-                rule_name="slash-coordination",
-                message=(
-                    f"「{matched_text}」はスラッシュではなく"
-                    "助詞でつなぐことを推奨します。"
-                ),
-                suggestion=suggestion,
-            ))
-    return issues
-
-
-def _looks_like_path_or_date(
-    line: str,
-    match: re.Match,
-    left: str,
-    right: str,
-) -> bool:
-    """スラッシュがパスや日付の区切りかを判定する"""
-    if left.isdigit() and right.isdigit():
-        return True
-    if match.start() > 0 and line[match.start() - 1] in ".=~/":
-        return True
-    if match.end() < len(line) and line[match.end()] in "./":
-        return True
-
-    left_is_ascii_word = left.isascii() and left.isalpha()
-    right_is_ascii_word = right.isascii() and right.isalpha()
-    if left_is_ascii_word and right_is_ascii_word:
-        return left.islower() and right.islower()
-    if left_is_ascii_word and not right_is_ascii_word:
-        return left.islower()
-    if right_is_ascii_word and not left_is_ascii_word:
-        return right.islower()
-    return False
-
-
 def _check_alnum_japanese_spacing(
     lines: list[str],
-    excluded_lines: set[int],
-    ranges_by_line: list[list[tuple[int, int]]],
+    masked_lines: list[str],
 ) -> list[LintIssue]:
     issues = []
-    for line_index, line in enumerate(lines):
-        if line_index in excluded_lines:
-            continue
-        for match in _ALNUM_JAPANESE_BOUNDARY_PATTERN.finditer(line):
+    for line_index, masked_line in enumerate(masked_lines):
+        line = lines[line_index]
+        for match in _ALNUM_JAPANESE_BOUNDARY_PATTERN.finditer(masked_line):
             boundary = match.start()
-            if span_overlaps_ranges(
-                boundary - 1,
-                boundary + 1,
-                ranges_by_line[line_index],
-            ):
-                continue
             matched_text = line[boundary - 1:boundary + 1]
             suggestion = f"{line[boundary - 1]} {line[boundary]}"
             issues.append(LintIssue(
