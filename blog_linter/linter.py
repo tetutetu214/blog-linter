@@ -7,6 +7,8 @@ from blog_linter.ai_writing_checker import (
     TEXTLINT_CONFIG,
     check_ai_writing,
 )
+from blog_linter.blog_structure_checker import check_blog_structure
+from blog_linter.blog_style_checker import check_blog_style
 from blog_linter.frontmatter_checker import check_frontmatter
 from blog_linter.models import LintIssue
 from blog_linter.notation_checker import check_notation
@@ -27,7 +29,7 @@ def lint_markdown(
     if "secrets" in checks:
         issues.extend(check_secrets(text))
     if "notation" in checks:
-        issues.extend(check_notation(text))
+        issues.extend(check_notation(text, profile=profile))
     if "ai_writing" in checks:
         config_path = (
             BLOG_TEXTLINT_CONFIG if profile == "blog" else TEXTLINT_CONFIG
@@ -45,6 +47,10 @@ def lint_markdown(
                     Path(temporary_file.name),
                     config_path=config_path,
                 ))
+    if "blog_style" in checks:
+        issues.extend(check_blog_style(text))
+    if "blog_structure" in checks:
+        issues.extend(check_blog_structure(text))
     if "frontmatter" in checks:
         if file_path is None or vault_root is None or tag_vocabulary is None:
             raise ValueError(

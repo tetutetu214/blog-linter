@@ -1,5 +1,11 @@
 """表記ブレチェッカー: プリセットルールで表記の統一性をチェックする"""
 import re
+
+from blog_linter.markdown_utils import (
+    excluded_line_indexes,
+    non_prose_ranges_by_line,
+    span_overlaps_ranges,
+)
 from blog_linter.models import LintIssue
 
 
@@ -48,6 +54,73 @@ NOTATION_RULES = [
 ]
 
 
+BLOG_UNOFFICIAL_TRANSLATIONS = {
+    "状態機械": "ステートマシン",
+}
+
+BLOG_NOTATION_RULES = [
+    {
+        "preferred": "Eufy",
+        "variants": [r"(?<![A-Za-z0-9])eufy(?![A-Za-z0-9])"],
+        "note": "ブランドの正式表記です",
+        "case_sensitive": True,
+        "excluded_terms": ("eufy-security-client",),
+        "rule_name": "brand-capitalization",
+    },
+    {
+        "preferred": "ニワトリ",
+        "variants": [r"にわとり", r"鶏"],
+        "note": "カタカナ表記に統一します",
+        "rule_name": "chicken-notation",
+    },
+    *[
+        {
+            "preferred": preferred,
+            "variants": [re.escape(variant)],
+            "note": "公式に使われる用語に統一します",
+            "rule_name": "unofficial-translation",
+        }
+        for variant, preferred in BLOG_UNOFFICIAL_TRANSLATIONS.items()
+    ],
+]
+
+_BLOG_EXCLUDED_BASE_RULES = {
+    "サーバー",
+    "ユーザー",
+    "コンピューター",
+    "プロバイダー",
+    "パラメーター",
+    "コンテナー",
+    "レジスター",
+    "ブラウザー",
+    "マネージャー",
+    "ドライバー",
+    "AWS Lambda",
+    "Amazon EC2",
+    "Amazon S3",
+    "Amazon RDS",
+    "Amazon DynamoDB",
+    "Amazon CloudWatch",
+    "AWS CloudFormation",
+    "AWS IAM",
+    "Amazon VPC",
+    "Amazon ECS",
+    "Amazon EKS",
+}
+_JAPANESE_CHARACTER_CLASS = "ぁ-んァ-ヶ一-鿿々〆ヶー"
+_SLASH_JAPANESE_TERM = r"(?:[ぁ-ん]+|[ァ-ヶー]+|[一-鿿々〆ヶ]+)"
+_SLASH_TERM = rf"(?:[A-Za-z][A-Za-z0-9+#-]*|[0-9]+|{_SLASH_JAPANESE_TERM})"
+_SLASH_COORDINATION_PATTERN = re.compile(
+    rf"(?<![A-Za-z0-9{_JAPANESE_CHARACTER_CLASS}/])"
+    rf"(?P<left>{_SLASH_TERM})/(?P<right>{_SLASH_TERM})"
+    rf"(?![A-Za-z0-9/])"
+)
+_ALNUM_JAPANESE_BOUNDARY_PATTERN = re.compile(
+    rf"(?:(?<=[A-Za-z0-9])(?=[{_JAPANESE_CHARACTER_CLASS}])|"
+    rf"(?<=[{_JAPANESE_CHARACTER_CLASS}])(?=[A-Za-z0-9]))"
+)
+
+
 def _is_in_code_block(lines: list[str], line_idx: int) -> bool:
     """コードブロック内かどうかを判定"""
     in_block = False
@@ -65,12 +138,19 @@ def _is_in_inline_code(line: str, start: int, end: int) -> bool:
     return backtick_count % 2 == 1
 
 
-def check_notation(text: str) -> list[LintIssue]:
+def check_notation(text: str, profile: str = "qiita") -> list[LintIssue]:
     """テキスト内の表記ブレを検出する"""
     issues = []
     lines = text.split("\n")
+    excluded_lines = excluded_line_indexes(lines) if profile == "blog" else set()
+    ranges_by_line = non_prose_ranges_by_line(
+        lines,
+        include_urls=True,
+        include_link_destinations=True,
+        include_mdx_attributes=profile == "blog",
+    )
 
-    for rule in NOTATION_RULES:
+    for rule in _notation_rules_for_profile(profile):
         preferred = rule["preferred"]
         note = rule.get("note", "")
         case_sensitive = rule.get("case_sensitive", False)
@@ -81,11 +161,19 @@ def check_notation(text: str) -> list[LintIssue]:
             pattern = re.compile(variant_pattern, flags)
 
             for line_idx, line in enumerate(lines):
+                if line_idx in excluded_lines:
+                    continue
                 if _is_in_code_block(lines, line_idx):
                     continue
 
                 for match in pattern.finditer(line):
-                    if _is_in_inline_code(line, match.start(), match.end()):
+                    if span_overlaps_ranges(
+                        match.start(),
+                        match.end(),
+                        ranges_by_line[line_idx],
+                    ):
+                        continue
+                    if _matches_excluded_term(line, match.start(), rule):
                         continue
 
                     matched_text = match.group(0)
@@ -107,9 +195,136 @@ def check_notation(text: str) -> list[LintIssue]:
                         column=match.start() + 1,
                         matched_text=matched_text,
                         category="notation",
-                        rule_name=f"表記ブレ: {preferred}",
+                        rule_name=rule.get("rule_name", f"表記ブレ: {preferred}"),
                         message=f"「{matched_text}」→「{preferred}」に統一を推奨。{note}",
                         suggestion=preferred,
                     ))
 
+    if profile == "blog":
+        issues.extend(_check_slash_coordination(
+            lines,
+            excluded_lines,
+            ranges_by_line,
+        ))
+        issues.extend(_check_alnum_japanese_spacing(
+            lines,
+            excluded_lines,
+            ranges_by_line,
+        ))
+
+    return issues
+
+
+def _notation_rules_for_profile(profile: str) -> list[dict]:
+    """プロファイルに適用する表記ルールを返す"""
+    if profile != "blog":
+        return NOTATION_RULES
+
+    rules = [
+        rule
+        for rule in NOTATION_RULES
+        if rule["preferred"] not in _BLOG_EXCLUDED_BASE_RULES
+    ]
+    rules.extend(BLOG_NOTATION_RULES)
+    return rules
+
+
+def _matches_excluded_term(line: str, start: int, rule: dict) -> bool:
+    """ライブラリ名などの除外語に含まれるかを返す"""
+    return any(
+        line.startswith(term, start)
+        for term in rule.get("excluded_terms", ())
+    )
+
+
+def _check_slash_coordination(
+    lines: list[str],
+    excluded_lines: set[int],
+    ranges_by_line: list[list[tuple[int, int]]],
+) -> list[LintIssue]:
+    issues = []
+    for line_index, line in enumerate(lines):
+        if line_index in excluded_lines:
+            continue
+        for match in _SLASH_COORDINATION_PATTERN.finditer(line):
+            if span_overlaps_ranges(
+                match.start(),
+                match.end(),
+                ranges_by_line[line_index],
+            ):
+                continue
+            left = match.group("left")
+            right = match.group("right")
+            if _looks_like_path_or_date(line, match, left, right):
+                continue
+            matched_text = match.group(0)
+            suggestion = f"{left} と {right}"
+            issues.append(LintIssue(
+                line_number=line_index + 1,
+                column=match.start() + 1,
+                matched_text=matched_text,
+                category="notation",
+                rule_name="slash-coordination",
+                message=(
+                    f"「{matched_text}」はスラッシュではなく"
+                    "助詞でつなぐことを推奨します。"
+                ),
+                suggestion=suggestion,
+            ))
+    return issues
+
+
+def _looks_like_path_or_date(
+    line: str,
+    match: re.Match,
+    left: str,
+    right: str,
+) -> bool:
+    """スラッシュがパスや日付の区切りかを判定する"""
+    if left.isdigit() and right.isdigit():
+        return True
+    if match.start() > 0 and line[match.start() - 1] in ".=~/":
+        return True
+    if match.end() < len(line) and line[match.end()] in "./":
+        return True
+
+    left_is_ascii_word = left.isascii() and left.isalpha()
+    right_is_ascii_word = right.isascii() and right.isalpha()
+    if left_is_ascii_word and right_is_ascii_word:
+        return left.islower() and right.islower()
+    if left_is_ascii_word and not right_is_ascii_word:
+        return left.islower()
+    if right_is_ascii_word and not left_is_ascii_word:
+        return right.islower()
+    return False
+
+
+def _check_alnum_japanese_spacing(
+    lines: list[str],
+    excluded_lines: set[int],
+    ranges_by_line: list[list[tuple[int, int]]],
+) -> list[LintIssue]:
+    issues = []
+    for line_index, line in enumerate(lines):
+        if line_index in excluded_lines:
+            continue
+        for match in _ALNUM_JAPANESE_BOUNDARY_PATTERN.finditer(line):
+            boundary = match.start()
+            if span_overlaps_ranges(
+                boundary - 1,
+                boundary + 1,
+                ranges_by_line[line_index],
+            ):
+                continue
+            matched_text = line[boundary - 1:boundary + 1]
+            suggestion = f"{line[boundary - 1]} {line[boundary]}"
+            issues.append(LintIssue(
+                line_number=line_index + 1,
+                column=boundary,
+                matched_text=matched_text,
+                category="notation",
+                rule_name="alnum-japanese-spacing",
+                message="英数字と日本語の間に半角スペースを入れてください。",
+                suggestion=suggestion,
+            ))
     return issues

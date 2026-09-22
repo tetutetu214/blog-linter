@@ -119,6 +119,8 @@ def _print_issues(issues):
         "secret": "機密情報の検出",
         "notation": "表記ブレの検出",
         "ai_writing": "AI 文体の検出",
+        "style": "blog 文体ルールの検出",
+        "structure": "blog 構成ルールの検出",
         "frontmatter": "Vault ルールの検出",
     }
 

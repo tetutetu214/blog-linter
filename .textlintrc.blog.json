@@ -2,6 +2,7 @@
   "rules": {
     "@textlint-ja/preset-ai-writing": true,
     "preset-ja-technical-writing": {
+      "no-mix-dearu-desumasu": false,
       "sentence-length": {
         "max": 80
       }
