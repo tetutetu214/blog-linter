@@ -117,12 +117,11 @@ _BLOG_EXCLUDED_BASE_RULES = {
 }
 _JAPANESE_CHARACTER_CLASS = "ぁ-んァ-ヶ一-鿿々〆ヶー"
 _KANJI_PATTERN = re.compile(r"[一-鿿々〆ヶ]")
-_SLASH_JAPANESE_TERM = r"(?:[ぁ-ん]+|[ァ-ヶー]+|[一-鿿々〆ヶ]+)"
-_SLASH_TERM = rf"(?:[A-Za-z][A-Za-z0-9+#-]*|[0-9]+|{_SLASH_JAPANESE_TERM})"
+_SLASH_TERM = rf"[A-Za-z0-9{_JAPANESE_CHARACTER_CLASS}+#-]+?"
 _SLASH_COORDINATION_PATTERN = re.compile(
     rf"(?<![A-Za-z0-9{_JAPANESE_CHARACTER_CLASS}/])"
-    rf"(?P<left>{_SLASH_TERM})/(?P<right>{_SLASH_TERM})"
-    rf"(?![A-Za-z0-9/])"
+    rf"{_SLASH_TERM}(?:/{_SLASH_TERM})+"
+    rf"(?=(?:\s|[。、！？）」』】]|$|を|に|へ|が|は|と|で|の|も|から|まで))"
 )
 _ALNUM_JAPANESE_BOUNDARY_PATTERN = re.compile(
     rf"(?:(?<=[A-Za-z0-9])(?=[{_JAPANESE_CHARACTER_CLASS}])|"

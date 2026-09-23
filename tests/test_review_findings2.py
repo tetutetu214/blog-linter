@@ -323,20 +323,17 @@ def test_画像のaltとtitle除外を外すと指摘が増える():
 
 
 def test_HTMLとJSX除外を外すと指摘が増える():
-    cases = (
-        (
-            "<Widget value={eufy} />",
-            "blog_linter.markdown_utils._block_non_prose_ranges",
-        ),
-        (
-            "本文 <span data-value=eufy>表示</span>",
-            "blog_linter.markdown_utils._inline_non_prose_ranges",
-        ),
+    texts = (
+        "<Widget value={eufy} />",
+        "本文 <span data-value=eufy>表示</span>",
     )
 
-    for text, target in cases:
+    for text in texts:
         assert _blog_rule_issues(text, "brand-capitalization") == []
-        with patch(target, return_value=[]):
+        with patch(
+            "blog_linter.markdown_utils._html_tag_ranges",
+            return_value=[],
+        ):
             assert _blog_rule_issues(text, "brand-capitalization") != []
 
 
@@ -377,15 +374,10 @@ def test_表の行の除外を外すと指摘が増える():
         assert _blog_rule_issues(text, "style-mixing") != []
 
 
-def test_箇条書きの行の除外を外すと指摘が増える():
+def test_箇条書きの完全な文は文体検査から除外しない():
     text = "設定します。\n確認します。\n- 操作する。"
 
-    assert _blog_rule_issues(text, "style-mixing") == []
-    with patch(
-        "blog_linter.blog_style_checker._is_nominal_or_label_line",
-        return_value=False,
-    ):
-        assert _blog_rule_issues(text, "style-mixing") != []
+    assert _blog_rule_issues(text, "style-mixing")
 
 
 def test_漢字隣接の除外を外すと指摘が増える():

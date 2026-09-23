@@ -694,7 +694,10 @@ def test_AWS文脈のIAMは初出略称として指摘する():
 def test_open_kanjiは漢字語に含まれる事を部分一致で置換しない():
     text = "仕事が出来る。手仕事が出来る。出来高と出来事と為替を確認する。"
 
-    assert _blog_rule_issues(text, "open-kanji") == []
+    assert [
+        issue.matched_text
+        for issue in _blog_rule_issues(text, "open-kanji")
+    ] == ["出来る", "出来る"]
 
 
 def test_chicken_notationは複合語の鶏を部分一致で置換しない():
@@ -721,10 +724,13 @@ def test_style_mixingは外側パイプの有無によらず表の行を数え�
         assert _blog_rule_issues(text, "style-mixing") == []
 
 
-def test_style_mixingは補足が続く箇条書きの行を数えない():
+def test_style_mixingは補足が続いても完全な文を数える():
     text = "設定します。\n確認します。\n- 操作する。（補足）"
 
-    assert _blog_rule_issues(text, "style-mixing") == []
+    assert [
+        issue.line_number
+        for issue in _blog_rule_issues(text, "style-mixing")
+    ] == [3]
 
 
 def test_slash_coordinationは用語らしいスラッシュを確認対象にする():
@@ -736,7 +742,12 @@ def test_slash_coordinationは用語らしいスラッシュを確認対象に�
 
     issues = _blog_rule_issues(text, "slash-coordination")
 
-    assert [issue.matched_text for issue in issues] == ["TCP/IP", "A/B"]
+    assert [issue.matched_text for issue in issues] == [
+        "TCP/IP",
+        "A/B",
+        "CPU/GPU/TPU",
+        "読み込み/書き込み",
+    ]
     assert all(issue.needs_review for issue in issues)
     assert all(issue.suggestion is None for issue in issues)
 

@@ -7,6 +7,7 @@ from blog_linter.markdown_utils import (
     line_start_offsets,
     mask_ranges,
     non_prose_ranges,
+    parse_markdown_tokens,
 )
 from blog_linter.models import LintIssue
 
@@ -25,7 +26,6 @@ AWS_SERVICES = (
     ("EKS", "Amazon EKS"),
 )
 
-_HEADING_PATTERN = re.compile(r"^\s{0,3}(?P<marker>#{1,6})\s+(?P<title>.+?)\s*$")
 _CITATION_PATTERN = re.compile(r"（出典\s*[:：]")
 
 
@@ -35,28 +35,49 @@ def check_blog_structure(text: str) -> list[LintIssue]:
     ranges = non_prose_ranges(text)
     masked_text = mask_ranges(text, ranges)
     masked_lines = masked_text.split("\n")
+    tokens = parse_markdown_tokens(text)
+    headings: list[tuple[int, int, str]] = []
+    for token_index, token in enumerate(tokens):
+        if (
+            token.type != "heading_open"
+            or token.map is None
+            or not masked_lines[token.map[0]].strip()
+        ):
+            continue
+        title = lines[token.map[0]].strip()
+        if (
+            token_index + 1 < len(tokens)
+            and tokens[token_index + 1].type == "inline"
+        ):
+            title = tokens[token_index + 1].content
+        headings.append((token.map[0], token.map[1], title))
     issues = []
-    issues.extend(_check_citation_density(lines, masked_lines))
+    issues.extend(_check_citation_density(masked_lines, headings))
     issues.extend(_check_aws_first_mentions(text, masked_text))
     return issues
 
 
 def _check_citation_density(
-    lines: list[str],
     masked_lines: list[str],
+    headings: list[tuple[int, int, str]],
 ) -> list[LintIssue]:
     issues = []
-    section_line = -1
-    section_title = ""
-    citation_count = 0
-
-    def append_section_issue() -> None:
-        if section_line < 0 or citation_count < 3:
-            return
+    for heading_index, (start, end, title) in enumerate(headings):
+        next_start = (
+            headings[heading_index + 1][0]
+            if heading_index + 1 < len(headings)
+            else len(masked_lines)
+        )
+        citation_count = sum(
+            len(_CITATION_PATTERN.findall(line))
+            for line in masked_lines[end:next_start]
+        )
+        if citation_count < 3:
+            continue
         issues.append(LintIssue(
-            line_number=section_line + 1,
+            line_number=start + 1,
             column=1,
-            matched_text=section_title,
+            matched_text=title,
             category="structure",
             rule_name="citation-density",
             message=(
@@ -65,22 +86,6 @@ def _check_citation_density(
             ),
             suggestion="出典表記を 2 回以下に整理する",
         ))
-
-    for line_index, masked_line in enumerate(masked_lines):
-        heading_match = _HEADING_PATTERN.match(masked_line)
-        if heading_match is not None:
-            append_section_issue()
-            section_line = line_index
-            section_title = lines[line_index][
-                heading_match.start("title"):heading_match.end("title")
-            ]
-            citation_count = 0
-            continue
-        if section_line < 0:
-            continue
-        citation_count += len(_CITATION_PATTERN.findall(masked_line))
-
-    append_section_issue()
     return issues
 
 

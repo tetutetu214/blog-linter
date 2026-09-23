@@ -3,8 +3,11 @@
 import re
 
 from blog_linter.markdown_utils import (
+    line_start_offsets,
     mask_ranges,
     non_prose_ranges,
+    parse_markdown_tokens,
+    span_overlaps_ranges,
 )
 from blog_linter.models import LintIssue
 
@@ -20,12 +23,6 @@ OPEN_KANJI_RULES = {
     "の為": "のため",
 }
 
-_OPEN_KANJI_PATTERN = re.compile(
-    "|".join(
-        re.escape(expression)
-        for expression in sorted(OPEN_KANJI_RULES, key=len, reverse=True)
-    )
-)
 _KANJI_BOUNDARY_OPEN_KANJI_RULES = {
     "事が出来る",
     "事ができる",
@@ -43,6 +40,7 @@ _PLAIN_ENDINGS = (
     "した",
     "しない",
     "できる",
+    "できない",
     "できた",
     "なる",
     "なった",
@@ -63,23 +61,63 @@ _COMMA_SENTENCE_JOIN_PATTERN = re.compile(
     r"[）)]、\s*(?P<connector>そのため|したがって|しかし|ただし|"
     r"これ|それ|なお|また)"
 )
-_EXCLUDED_CONNECTOR_PREFIXES = ("その他", "その際", "その後", "その上")
-_EMPHASIS_MARKERS = ("**", "__", "~~", "*", "_")
-_HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s+")
-_LIST_ITEM_PATTERN = re.compile(r"^\s*(?:[-+*]|\d+[.)])\s+")
+_EXCLUDED_CONNECTOR_PREFIXES = (
+    "その他",
+    "その際",
+    "その後",
+    "その上",
+)
 _KANJI_PATTERN = re.compile(r"[一-鿿々〆ヶ]")
+_LEXICAL_STEM_PATTERN = re.compile(r"[^\s、。！？!?はがをにへとでのも]+$")
+_CONTENT_CHARACTER_PATTERN = re.compile(r"[A-Za-z0-9ァ-ヶー一-鿿々〆ヶ]")
+_NEGATIVE_VERB_STEM_ENDINGS = frozenset("わかがさたなばまらり")
+_CLAUSE_PARTICLES = frozenset("をがはにでとへも")
 
 
 def check_blog_style(text: str) -> list[LintIssue]:
     """blog 固有の文体ルールをチェックする"""
     lines = text.split("\n")
+    tokens = parse_markdown_tokens(text)
     ranges = non_prose_ranges(text)
     masked_lines = mask_ranges(text, ranges).split("\n")
+    heading_maps = [
+        (token.map[0], token.map[1])
+        for token in tokens
+        if (
+            token.type == "heading_open"
+            and token.map is not None
+            and masked_lines[token.map[0]].strip()
+        )
+    ]
+    heading_lines = {
+        line_index
+        for start, end in heading_maps
+        for line_index in range(start, end)
+    }
+    table_lines = {
+        line_index
+        for token in tokens
+        if token.type == "table_open" and token.map is not None
+        for line_index in range(token.map[0], token.map[1])
+    }
+    offsets = line_start_offsets(text)
+    visible_lines = [
+        _visible_line(line, offsets[line_index], ranges)
+        for line_index, line in enumerate(lines)
+    ]
     issues = []
     issues.extend(_check_open_kanji(lines, masked_lines))
-    issues.extend(_check_style_mixing(lines, masked_lines))
+    issues.extend(_check_style_mixing(
+        visible_lines,
+        heading_lines,
+        table_lines,
+    ))
     issues.extend(_check_comma_sentence_join(lines, masked_lines))
-    issues.extend(_check_section_opening_mazu(lines, masked_lines))
+    issues.extend(_check_section_opening_mazu(
+        lines,
+        masked_lines,
+        heading_maps,
+    ))
     return issues
 
 
@@ -90,22 +128,36 @@ def _check_open_kanji(
     issues = []
     for line_index, masked_line in enumerate(masked_lines):
         line = lines[line_index]
-        for match in _OPEN_KANJI_PATTERN.finditer(masked_line):
-            matched_text = line[match.start():match.end()]
+        candidates = sorted(
+            (
+                (match.start(), match.end(), expression)
+                for expression in OPEN_KANJI_RULES
+                for match in re.finditer(re.escape(expression), masked_line)
+            ),
+            key=lambda candidate: (candidate[0], -(candidate[1] - candidate[0])),
+        )
+        accepted_ranges: list[tuple[int, int]] = []
+        for start, end, matched_text in candidates:
             if (
                 matched_text in _KANJI_BOUNDARY_OPEN_KANJI_RULES
                 and _is_kanji_compound(
                     line,
-                    match.start(),
-                    match.end(),
+                    start,
+                    end,
                     matched_text,
                 )
             ):
                 continue
+            if any(
+                start < accepted_end and accepted_start < end
+                for accepted_start, accepted_end in accepted_ranges
+            ):
+                continue
+            accepted_ranges.append((start, end))
             suggestion = OPEN_KANJI_RULES[matched_text]
             issues.append(LintIssue(
                 line_number=line_index + 1,
-                column=match.start() + 1,
+                column=start + 1,
                 matched_text=matched_text,
                 category="style",
                 rule_name="open-kanji",
@@ -116,15 +168,19 @@ def _check_open_kanji(
 
 
 def _check_style_mixing(
-    lines: list[str],
-    masked_lines: list[str],
+    visible_lines: list[tuple[str, list[int]]],
+    heading_lines: set[int],
+    table_lines: set[int],
 ) -> list[LintIssue]:
     endings: list[tuple[str, int, int, str]] = []
-    for line_index, masked_line in enumerate(masked_lines):
-        if _is_nominal_or_label_line(lines[line_index]):
+    for line_index, (visible_line, source_columns) in enumerate(visible_lines):
+        if _is_nominal_or_label_line(
+            line_index,
+            heading_lines,
+            table_lines,
+        ):
             continue
-        styled_line, source_columns = _remove_emphasis_markers(masked_line)
-        for sentence_match in _SENTENCE_PATTERN.finditer(styled_line):
+        for sentence_match in _SENTENCE_PATTERN.finditer(visible_line):
             sentence = sentence_match.group(0)
             polite_match = _POLITE_ENDING_PATTERN.search(sentence)
             if polite_match is not None:
@@ -137,7 +193,10 @@ def _check_style_mixing(
                 ))
                 continue
             plain_match = _PLAIN_ENDING_PATTERN.search(sentence)
-            if plain_match is None:
+            if plain_match is None or not _is_plain_ending(
+                sentence,
+                plain_match,
+            ):
                 continue
             start = sentence_match.start() + plain_match.start()
             endings.append((
@@ -209,13 +268,11 @@ def _check_comma_sentence_join(
 def _check_section_opening_mazu(
     lines: list[str],
     masked_lines: list[str],
+    heading_maps: list[tuple[int, int]],
 ) -> list[LintIssue]:
     issues = []
-    for line_index, masked_line in enumerate(masked_lines):
-        if not _HEADING_PATTERN.match(masked_line):
-            continue
-
-        paragraph_index = line_index + 1
+    for _, heading_end in heading_maps:
+        paragraph_index = heading_end
         while (
             paragraph_index < len(masked_lines)
             and not masked_lines[paragraph_index].strip()
@@ -242,37 +299,46 @@ def _check_section_opening_mazu(
     return issues
 
 
-def _is_nominal_or_label_line(line: str) -> bool:
-    """見出し・表・箇条書きラベルの体言止めを判定する"""
-    stripped = line.strip()
-    if _HEADING_PATTERN.match(line):
-        return True
-    if "|" in stripped:
-        return True
-    return _LIST_ITEM_PATTERN.match(line) is not None
+def _is_nominal_or_label_line(
+    line_index: int,
+    heading_lines: set[int],
+    table_lines: set[int],
+) -> bool:
+    """パーサが見出しまたは表と認識した行かを返す。"""
+    return line_index in heading_lines or line_index in table_lines
 
 
-def _remove_emphasis_markers(line: str) -> tuple[str, list[int]]:
-    """強調記号を除いた文字列と元の列位置を返す。"""
+def _visible_line(
+    line: str,
+    line_start: int,
+    ranges: list[tuple[int, int]],
+) -> tuple[str, list[int]]:
+    """非本文を除いた表示行と、各文字に対応する元の列を返す。"""
     characters: list[str] = []
     source_columns: list[int] = []
-    position = 0
-    while position < len(line):
-        marker = next(
-            (
-                candidate
-                for candidate in _EMPHASIS_MARKERS
-                if line.startswith(candidate, position)
-            ),
-            None,
-        )
-        if marker is not None:
-            position += len(marker)
+    for column, character in enumerate(line):
+        position = line_start + column
+        if span_overlaps_ranges(position, position + 1, ranges):
             continue
-        characters.append(line[position])
-        source_columns.append(position)
-        position += 1
+        characters.append(character)
+        source_columns.append(column)
     return "".join(characters), source_columns
+
+
+def _is_plain_ending(sentence: str, match: re.Match[str]) -> bool:
+    """常体候補が語中ではなく活用語尾として現れているかを返す。"""
+    ending = match.group(0).rstrip("。！？!?")
+    stem_match = _LEXICAL_STEM_PATTERN.search(sentence[:match.start()])
+    stem = stem_match.group(0) if stem_match is not None else ""
+    if ending == "ない":
+        return (
+            bool(stem)
+            and stem[-1] in _NEGATIVE_VERB_STEM_ENDINGS
+            and _KANJI_PATTERN.search(stem) is not None
+        )
+    if ending == "した":
+        return _CONTENT_CHARACTER_PATTERN.search(stem) is not None
+    return True
 
 
 def _has_adjacent_kanji(line: str, start: int, end: int) -> bool:
@@ -306,6 +372,15 @@ def _is_kanji_compound(
 def _is_excluded_connector(line: str, start: int, end: int) -> bool:
     """列挙語など、文頭の接続語ではない一致かを返す。"""
     if end < len(line) and line[end] == "は":
+        return True
+    connector = line[start:end]
+    if (
+        connector in {"これ", "それ"}
+        and end < len(line)
+        and not line[end].isspace()
+        and line[end] not in _CLAUSE_PARTICLES
+        and line[end] not in "、。！？!?"
+    ):
         return True
     suffix = line[start:]
     return any(
