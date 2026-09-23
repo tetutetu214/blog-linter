@@ -15,7 +15,10 @@ _RAW_URL_START_PATTERN = re.compile(r"(?:https?://|www\.)", re.IGNORECASE)
 _URL_TRAILING_PUNCTUATION = ".,;:!?。、！？"
 # 日本語の文で URL の直後に置かれる全角記号。ASCII の ? ! は URL の一部に
 # なりうる（クエリ・ハッシュバン）ため境界にしない。
-_URL_BOUNDARY_PUNCTUATION = "。、！？）」』】〉》（「『【〈《・，．：；"
+# 中黒（・）・コロン・読点の異体（，．：；）や開き括弧は URL の中にも現れるので
+# 入れない。入れたところ `https://example.com/a・b/eufy` が途中で切れ、
+# URL の中身を本文として誤検出した（2026-09-24）。
+_URL_BOUNDARY_PUNCTUATION = "。、！？）」』】〉》"
 _RAW_HTML_ELEMENTS = {"script", "style"}
 _INLINE_FORMAT_TOKEN_TYPES = {
     "em_open",

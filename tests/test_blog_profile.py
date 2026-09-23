@@ -984,3 +984,27 @@ def test_slash_coordinationはスラッシュ並列を指摘したまま():
     text = "入力/出力/その他を確認します。"
 
     assert _blog_rule_issues(text, "slash-coordination")
+
+
+def test_これ以外の接続語は括弧付きの名詞句があっても文の切れ目として指摘する():
+    # 並べ立ての判定を接続語を問わず適用すると、「そのため」「しかし」で始まる
+    # 本物の文の切れ目を、文中に（…）があるだけで見逃していた（2026-09-24）。
+    for text in (
+        "計測しました（3回平均）、そのため設定（既定値）を変えました。",
+        "移行しました（昨年）、しかし互換性（v1系）は維持しています。",
+    ):
+        assert _blog_rule_issues(text, "comma-sentence-join"), text
+
+
+def test_これのあとに主題の助詞が続くときは並べ立てとみなさない():
+    text = "この方式で実装しました（詳細は後述）、これは秒間10万件（実測）を処理します。"
+
+    assert _blog_rule_issues(text, "comma-sentence-join")
+
+
+def test_中黒を含むURLは途中で切らない():
+    # URL の終端に中黒を入れると、URL の中身を本文として検査してしまう（2026-09-24）。
+    text = "https://example.com/a・b/eufy"
+
+    assert _blog_rule_issues(text, "brand-capitalization") == []
+    assert _blog_rule_issues(text, "slash-coordination") == []

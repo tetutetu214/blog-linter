@@ -429,7 +429,15 @@ def _is_excluded_connector(line: str, start: int, end: int) -> bool:
         and following not in "、。！？!?"
     ):
         return True
-    if _is_bracketed_enumeration(line, end):
+    # 括弧付きの並べ立ての判定は「これ」「それ」のときだけに限る。
+    # 接続語を問わず適用すると、「そのため」「しかし」で始まる本物の文の
+    # 切れ目を、文中に（…）があるだけで黙って見逃していた（2026-09-24）。
+    # 「は」「も」が続くときは次の文の主題なので、並べ立てとみなさない。
+    if (
+        connector in {"これ", "それ"}
+        and following not in "はも"
+        and _is_bracketed_enumeration(line, end)
+    ):
         return True
     suffix = line[start:]
     return any(
