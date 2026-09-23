@@ -19,8 +19,10 @@ def test_LintIssueは従来のimport先から利用できる():
     assert issue.file == ""
 
 
-def test_既定プロファイルは従来のチェックだけを実行する():
-    issues = lint_markdown("frontmatter はありません。サーバを使います。")
+def test_qiitaプロファイルは表記ブレだけを返す():
+    issues = lint_markdown(
+        "frontmatter はありません。サーバを使います。", profile="qiita"
+    )
     assert {issue.category for issue in issues} == {"notation"}
 
 

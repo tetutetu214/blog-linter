@@ -15,8 +15,8 @@ def main():
     check_parser = subparsers.add_parser("check", help="Markdownファイルをチェック")
     check_parser.add_argument("file", type=str, help="チェック対象のファイルまたはディレクトリ")
     check_parser.add_argument(
-        "--profile", choices=("qiita", "blog", "vault"), default="qiita",
-        help="チェック対象のプロファイル（デフォルト: qiita）",
+        "--profile", choices=("qiita", "blog", "vault"), default="blog",
+        help="チェック対象のプロファイル（デフォルト: blog）",
     )
     check_parser.add_argument(
         "--vault-root", default="/mnt/c/Users/lemon/Vault",
@@ -119,6 +119,8 @@ def _print_issues(issues):
         "secret": "機密情報の検出",
         "notation": "表記ブレの検出",
         "ai_writing": "AI 文体の検出",
+        "style": "blog 文体ルールの検出",
+        "structure": "blog 構成ルールの検出",
         "frontmatter": "Vault ルールの検出",
     }
 
@@ -130,7 +132,11 @@ def _print_issues(issues):
         print(f"  {label}: {len(category_issues)} 件")
         print(f"{'='*60}")
         for issue in category_issues:
-            print(f"  L{issue.line_number}:{issue.column}  [{issue.rule_name}]")
+            issue_type = "確認" if issue.needs_review else "提案"
+            print(
+                f"  L{issue.line_number}:{issue.column}  "
+                f"[{issue_type}] [{issue.rule_name}]"
+            )
             print(f"    {issue.message}")
             if issue.suggestion:
                 print(f"    → {issue.suggestion}")
@@ -149,7 +155,7 @@ def _run_post(args):
     text = filepath.read_text(encoding="utf-8")
 
     # 投稿前に必ずリントし、機密情報があれば投稿を中止する
-    issues = lint_markdown(text)
+    issues = lint_markdown(text, profile="qiita")
     if has_secret_issues(issues):
         secret_issues = [i for i in issues if i.category == "secret"]
         print(f"\n{'='*60}")

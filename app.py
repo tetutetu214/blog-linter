@@ -64,42 +64,48 @@ if "linted_issues" in st.session_state:
     else:
         secret_issues = [i for i in issues if i.category == "secret"]
         notation_issues = [i for i in issues if i.category == "notation"]
+        style_issues = [i for i in issues if i.category == "style"]
+        structure_issues = [i for i in issues if i.category == "structure"]
 
         # サマリー
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("合計", f"{len(issues)} 件")
         col2.metric("機密情報", f"{len(secret_issues)} 件")
         col3.metric("表記ブレ", f"{len(notation_issues)} 件")
+        col4.metric("文体", f"{len(style_issues)} 件")
+        col5.metric("構成", f"{len(structure_issues)} 件")
 
-        # 機密情報
-        if secret_issues:
-            st.subheader("🔐 機密情報の検出", divider="red")
-            for issue in secret_issues:
+        category_displays = (
+            ("secret", "🔐 機密情報の検出", "red"),
+            ("notation", "📝 表記ブレの検出", "orange"),
+            ("ai_writing", "🤖 AI 文体の検出", "gray"),
+            ("style", "✍️ blog 文体ルールの検出", "blue"),
+            ("structure", "🏗️ blog 構成ルールの検出", "violet"),
+            ("frontmatter", "📋 Vault ルールの検出", "green"),
+        )
+        lines = text.split("\n")
+        for category, label, divider in category_displays:
+            category_issues = [
+                issue for issue in issues if issue.category == category
+            ]
+            if not category_issues:
+                continue
+            st.subheader(label, divider=divider)
+            for issue in category_issues:
+                issue_type = "確認" if issue.needs_review else "提案"
                 with st.expander(
-                    f"L{issue.line_number} [{issue.rule_name}] {issue.message}",
+                    f"L{issue.line_number} [{issue_type}] "
+                    f"[{issue.rule_name}] {issue.matched_text}",
                     expanded=True,
                 ):
-                    st.markdown(f"**行番号:** {issue.line_number}, **列:** {issue.column}")
+                    st.markdown(f"**種別:** {issue_type}")
+                    st.markdown(
+                        f"**行番号:** {issue.line_number}, **列:** {issue.column}"
+                    )
                     st.markdown(f"**ルール:** {issue.rule_name}")
-                    st.markdown(f"**提案:** {issue.suggestion}")
-
-                    # 該当行を表示
-                    lines = text.split("\n")
-                    if 0 < issue.line_number <= len(lines):
-                        st.code(lines[issue.line_number - 1], language="text")
-
-        # 表記ブレ
-        if notation_issues:
-            st.subheader("📝 表記ブレの検出", divider="orange")
-            for issue in notation_issues:
-                with st.expander(
-                    f"L{issue.line_number} 「{issue.matched_text}」→「{issue.suggestion}」",
-                    expanded=True,
-                ):
-                    st.markdown(f"**行番号:** {issue.line_number}, **列:** {issue.column}")
                     st.markdown(f"**メッセージ:** {issue.message}")
-
-                    lines = text.split("\n")
+                    if issue.suggestion:
+                        st.markdown(f"**提案:** {issue.suggestion}")
                     if 0 < issue.line_number <= len(lines):
                         st.code(lines[issue.line_number - 1], language="text")
 
