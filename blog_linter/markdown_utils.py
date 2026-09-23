@@ -13,7 +13,9 @@ TextRange = tuple[int, int]
 _BLOCK_TOKEN_TYPES = {"front_matter", "fence", "code_block"}
 _RAW_URL_START_PATTERN = re.compile(r"(?:https?://|www\.)", re.IGNORECASE)
 _URL_TRAILING_PUNCTUATION = ".,;:!?。、！？"
-_URL_BOUNDARY_PUNCTUATION = "。、）」』】"
+# 日本語の文で URL の直後に置かれる全角記号。ASCII の ? ! は URL の一部に
+# なりうる（クエリ・ハッシュバン）ため境界にしない。
+_URL_BOUNDARY_PUNCTUATION = "。、！？）」』】〉》（「『【〈《・，．：；"
 _RAW_HTML_ELEMENTS = {"script", "style"}
 _INLINE_FORMAT_TOKEN_TYPES = {
     "em_open",

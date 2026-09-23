@@ -383,6 +383,21 @@ STYLE_MUTATIONS = (
         True,
         lambda line, start, end: False,
     ),
+    MutationCase(
+        "_is_negative_verb_stem",
+        lambda: style._is_negative_verb_stem("止め"),
+        True,
+        lambda stem: False,
+    ),
+    MutationCase(
+        "_is_bracketed_enumeration",
+        lambda: style._is_bracketed_enumeration(
+            "これを使った出力（任意）を指定します。",
+            2,
+        ),
+        True,
+        lambda line, position: False,
+    ),
 )
 
 

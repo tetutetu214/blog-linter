@@ -67,10 +67,33 @@ _EXCLUDED_CONNECTOR_PREFIXES = (
     "その後",
     "その上",
 )
+_SENTENCE_TAIL_PATTERN = re.compile(r"[^。！？!?\n]*")
+_BRACKETED_ITEM_PATTERN = re.compile(r"[（(][^（()）\n]*[）)]\s*[をがはにでとへも]")
 _KANJI_PATTERN = re.compile(r"[一-鿿々〆ヶ]")
 _LEXICAL_STEM_PATTERN = re.compile(r"[^\s、。！？!?はがをにへとでのも]+$")
 _CONTENT_CHARACTER_PATTERN = re.compile(r"[A-Za-z0-9ァ-ヶー一-鿿々〆ヶ]")
+# 五段動詞の未然形（あ段）。「動かない」「読まない」など。
 _NEGATIVE_VERB_STEM_ENDINGS = frozenset("わかがさたなばまらり")
+# 一段動詞の未然形（い段・え段）。「止めない」「呼ばれない」など。
+_ICHIDAN_NEGATIVE_STEM_ENDINGS = frozenset("いきぎしじちにひびみりえけげせぜてでねべめれ")
+# 語幹が漢字で終わる形容詞。動詞の否定形と形が同じなので語で除く。
+_NAI_ADJECTIVE_STEMS = (
+    "少",
+    "危",
+    "切",
+    "汚",
+    "情け",
+    "申し訳",
+    "味気",
+    "何気",
+    "素っ気",
+    "大人げ",
+    "勿体",
+    "他愛",
+)
+# 「書いた」（イ音便の連用形）と「流れていた」（て・で + いた）で
+# 「いた」の直前に来る仮名。
+_I_ONBIN_STEM_ENDINGS = frozenset("いきぎしじちにひびみりつづてで")
 _CLAUSE_PARTICLES = frozenset("をがはにでとへも")
 
 
@@ -331,14 +354,36 @@ def _is_plain_ending(sentence: str, match: re.Match[str]) -> bool:
     stem_match = _LEXICAL_STEM_PATTERN.search(sentence[:match.start()])
     stem = stem_match.group(0) if stem_match is not None else ""
     if ending == "ない":
+        return _is_negative_verb_stem(stem)
+    if ending == "いた":
+        # 「まないた」のような名詞を拾わないよう、イ音便の語幹だけを数える。
         return (
             bool(stem)
-            and stem[-1] in _NEGATIVE_VERB_STEM_ENDINGS
             and _KANJI_PATTERN.search(stem) is not None
+            and (
+                _KANJI_PATTERN.fullmatch(stem[-1]) is not None
+                or stem[-1] in _I_ONBIN_STEM_ENDINGS
+            )
         )
     if ending == "した":
         return _CONTENT_CHARACTER_PATTERN.search(stem) is not None
     return True
+
+
+def _is_negative_verb_stem(stem: str) -> bool:
+    """「〜ない。」の直前が動詞の未然形かを返す（形容詞・名詞は数えない）。"""
+    if not stem or _KANJI_PATTERN.search(stem) is None:
+        # 仮名だけの語（「つまらない」「まないた」）は動詞と区別できない。
+        return False
+    if any(stem.endswith(adjective) for adjective in _NAI_ADJECTIVE_STEMS):
+        return False
+    last_character = stem[-1]
+    return (
+        last_character in _NEGATIVE_VERB_STEM_ENDINGS
+        or last_character in _ICHIDAN_NEGATIVE_STEM_ENDINGS
+        # 「出ない」のように語幹が漢字だけで終わる一段動詞。
+        or _KANJI_PATTERN.fullmatch(last_character) is not None
+    )
 
 
 def _has_adjacent_kanji(line: str, start: int, end: int) -> bool:
@@ -371,19 +416,31 @@ def _is_kanji_compound(
 
 def _is_excluded_connector(line: str, start: int, end: int) -> bool:
     """列挙語など、文頭の接続語ではない一致かを返す。"""
-    if end < len(line) and line[end] == "は":
-        return True
     connector = line[start:end]
+    following = line[end:end + 1]
+    # 「または」は列挙の接続語。「これは」「それは」は次の文の主語なので残す。
+    if connector == "また" and following == "は":
+        return True
     if (
         connector in {"これ", "それ"}
-        and end < len(line)
-        and not line[end].isspace()
-        and line[end] not in _CLAUSE_PARTICLES
-        and line[end] not in "、。！？!?"
+        and following
+        and not following.isspace()
+        and following not in _CLAUSE_PARTICLES
+        and following not in "、。！？!?"
     ):
+        return True
+    if _is_bracketed_enumeration(line, end):
         return True
     suffix = line[start:]
     return any(
         suffix.startswith(prefix)
         for prefix in _EXCLUDED_CONNECTOR_PREFIXES
     )
+
+
+def _is_bracketed_enumeration(line: str, position: int) -> bool:
+    """接続語の後ろにも括弧付きの名詞句が続く、一文の中の並べ立てかを返す。"""
+    tail = _SENTENCE_TAIL_PATTERN.match(line, position)
+    if tail is None:
+        return False
+    return _BRACKETED_ITEM_PATTERN.search(tail.group(0)) is not None

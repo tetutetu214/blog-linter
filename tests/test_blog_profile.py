@@ -845,3 +845,142 @@ def test_自己終了タグの中身は検査しない():
     text = '<img src="./x.png" alt="eufy を確認します。" />\n'
 
     assert _blog_rule_issues(text, "brand-capitalization") == []
+
+
+def test_style_mixingは動詞の否定形を常体として数える():
+    # 「〜ない。」で終わる動詞の否定形が常体として数えられず、混在を見逃していた。
+    texts = (
+        "設定します。\n確認します。\nこの処理は止めない。",
+        "設定します。\n確認します。\nエラーは出ない。",
+        "設定します。\n確認します。\n処理が呼ばれない。",
+    )
+
+    for text in texts:
+        assert _blog_rule_issues(text, "style-mixing")
+
+
+def test_style_mixingは形容詞と名詞の語尾を常体として数えない():
+    texts = (
+        "設定します。\n確認します。\nデータが少ない。",
+        "設定します。\n確認します。\n追加のくつした。",
+        "設定します。\n確認します。\n大きなまないた。",
+    )
+
+    for text in texts:
+        assert _blog_rule_issues(text, "style-mixing") == []
+
+
+def test_style_mixingは進行形の過去を常体として数える():
+    # 「まないた」を外す条件を厳しくしたとき、実記事の「流れていた。」を落とした。
+    text = "設定します。\n確認します。\n先頭チャンクが流れていた。"
+
+    assert _blog_rule_issues(text, "style-mixing")
+
+
+def test_否定形の語幹判定を外すと動詞の否定形を数えない():
+    text = "設定します。\n確認します。\nこの処理は止めない。"
+
+    assert _blog_rule_issues(text, "style-mixing")
+    with patch(
+        "blog_linter.blog_style_checker._is_negative_verb_stem",
+        return_value=False,
+    ):
+        assert _blog_rule_issues(text, "style-mixing") == []
+
+
+def test_形容詞の除外を外すと少ないを常体として数える():
+    text = "設定します。\n確認します。\nデータが少ない。"
+
+    assert _blog_rule_issues(text, "style-mixing") == []
+    with patch(
+        "blog_linter.blog_style_checker._is_negative_verb_stem",
+        return_value=True,
+    ):
+        assert _blog_rule_issues(text, "style-mixing") != []
+
+
+def test_comma_sentence_joinは閉じ括弧後の読点で始まる文を指摘する():
+    # 「これは」は次の文の主語。「または」用の除外が接続語を問わず効いていた。
+    text = "この方式で実装しました（詳細は後述）、これは高速です。"
+
+    issues = _blog_rule_issues(text, "comma-sentence-join")
+
+    assert [issue.matched_text for issue in issues] == ["）、これ"]
+
+
+def test_comma_sentence_joinは括弧付きの名詞句の並べ立てを指摘しない():
+    texts = (
+        "入力（必須）、これを使った出力（任意）を指定します。",
+        "入力（必須）、または出力（任意）を指定します。",
+        "概要（必読）、これまでの変更点（任意）を確認します。",
+    )
+
+    for text in texts:
+        assert _blog_rule_issues(text, "comma-sentence-join") == []
+
+
+def test_接続語の除外を外すと並べ立ても指摘する():
+    text = "入力（必須）、これを使った出力（任意）を指定します。"
+
+    assert _blog_rule_issues(text, "comma-sentence-join") == []
+    with patch(
+        "blog_linter.blog_style_checker._is_excluded_connector",
+        return_value=False,
+    ):
+        assert _blog_rule_issues(text, "comma-sentence-join") != []
+
+
+def test_全角の感嘆符で終わるURLの後ろを本文として検査する():
+    # 「！」「？」を URL の一部とみなし、行末までが検査対象外になっていた。
+    text = "詳しくは https://example.com！実行出来ます。"
+
+    assert _blog_rule_issues(text, "open-kanji")
+
+
+def test_全角の疑問符で終わるURLの後ろを本文として検査する():
+    text = "詳しくは https://example.com？eufy を確認します。"
+
+    assert _blog_rule_issues(text, "brand-capitalization")
+
+
+def test_URLの範囲は句点と括弧の扱いを変えない():
+    assert _blog_rule_issues(
+        "詳しくは https://example.com。実行出来ます。",
+        "open-kanji",
+    )
+    assert _blog_rule_issues(
+        "https://example.com/a(b)/eufy",
+        "brand-capitalization",
+    ) == []
+    assert _blog_rule_issues(
+        "（https://example.com）eufy を確認出来ます。",
+        "brand-capitalization",
+    )
+
+
+def test_URLの範囲はASCIIのクエリとハッシュバンで切れない():
+    # ASCII の `?` `!` は URL の一部になりうるため境界にしない。
+    texts = (
+        "https://example.com/?q=eufy",
+        "https://example.com/#!/eufy",
+    )
+
+    for text in texts:
+        assert _blog_rule_issues(text, "brand-capitalization") == []
+
+
+def test_URL境界から全角記号を外すと後続の本文を検査しない():
+    text = "詳しくは https://example.com！実行出来ます。"
+
+    assert _blog_rule_issues(text, "open-kanji")
+    with patch(
+        "blog_linter.markdown_utils._URL_BOUNDARY_PUNCTUATION",
+        "。、）」』】",
+    ):
+        assert _blog_rule_issues(text, "open-kanji") == []
+
+
+def test_slash_coordinationはスラッシュ並列を指摘したまま():
+    text = "入力/出力/その他を確認します。"
+
+    assert _blog_rule_issues(text, "slash-coordination")
