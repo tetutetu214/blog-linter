@@ -1,43 +1,190 @@
-"""Markdown 内で lint 対象外にする文字範囲を計算する共通処理"""
+"""Markdown の構文トークンから lint 対象外の文字範囲を計算する。"""
 
+from html import unescape
 import re
+
+from markdown_it import MarkdownIt
+from markdown_it.rules_block import StateBlock
+from markdown_it.token import Token
 
 
 TextRange = tuple[int, int]
 
-_FRONTMATTER_OPEN_PATTERN = re.compile(r"^\ufeff?---[ \t]*$")
-_FRONTMATTER_CLOSE_PATTERN = re.compile(r"^(?:---|\.\.\.)[ \t]*$")
-_FENCE_PATTERN = re.compile(r"(?P<marker>`{3,}|~{3,})(?P<suffix>.*)$")
-_BACKTICK_RUN_PATTERN = re.compile(r"`+")
-_RAW_URL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>\"'\])}]+")
-_MARKDOWN_LINK_START_PATTERN = re.compile(r"!?\[")
-_JSX_TAG_START_PATTERN = re.compile(
-    r"<(?P<closing>/)?(?P<name>[A-Za-z][A-Za-z0-9_.:-]*)"
-)
-_JSX_ATTRIBUTE_NAME_PATTERN = re.compile(r"[A-Za-z_:][A-Za-z0-9_.:-]*")
-_JSX_NON_PROSE_ATTRIBUTES = {"alt", "title"}
+_BLOCK_TOKEN_TYPES = {"front_matter", "fence", "code_block", "html_block"}
+_RAW_URL_START_PATTERN = re.compile(r"(?:https?://|www\.)", re.IGNORECASE)
+_URL_TRAILING_PUNCTUATION = ".,;:!?。、！？"
+_INLINE_FORMAT_TOKEN_TYPES = {
+    "em_open",
+    "em_close",
+    "strong_open",
+    "strong_close",
+    "s_open",
+    "s_close",
+}
+
+
+def _front_matter_rule(
+    state: StateBlock,
+    start_line: int,
+    end_line: int,
+    silent: bool,
+) -> bool:
+    """文書先頭の YAML front matter をブロックトークンにする。"""
+    if start_line != 0:
+        return False
+
+    start = state.bMarks[start_line] + state.tShift[start_line]
+    end = state.eMarks[start_line]
+    if state.src[start:end].removeprefix("\ufeff") != "---":
+        return False
+
+    next_line = start_line + 1
+    while next_line < end_line:
+        line_start = state.bMarks[next_line]
+        line_end = state.eMarks[next_line]
+        line = state.src[line_start:line_end]
+        if state.tShift[next_line] == 0 and line in {"---", "..."}:
+            next_line += 1
+            break
+        next_line += 1
+
+    if silent:
+        return True
+
+    token = state.push("front_matter", "", 0)
+    token.map = [start_line, next_line]
+    token.content = state.getLines(start_line, next_line, 0, False)
+    state.line = next_line
+    return True
+
+
+def _self_closing_html_block_rule(
+    state: StateBlock,
+    start_line: int,
+    end_line: int,
+    silent: bool,
+) -> bool:
+    """自己完結する HTML/JSX タグだけを一つのブロックにする。"""
+    if state.sCount[start_line] - state.blkIndent >= 4:
+        return False
+
+    start = state.bMarks[start_line] + state.tShift[start_line]
+    first_line_end = state.eMarks[start_line]
+    if start >= first_line_end or state.src[start] != "<":
+        return False
+
+    name_start = start + 1
+    if name_start >= first_line_end or not state.src[name_start].isalpha():
+        return False
+
+    name_end = name_start + 1
+    while name_end < first_line_end and (
+        state.src[name_end].isalnum() or state.src[name_end] in "_.:-"
+    ):
+        name_end += 1
+    if (
+        name_end < first_line_end
+        and not state.src[name_end].isspace()
+        and state.src[name_end] not in "/>"
+    ):
+        return False
+
+    quote = ""
+    brace_depth = 0
+    position = name_end
+    closing_position: int | None = None
+    while position < len(state.src):
+        character = state.src[position]
+        if quote:
+            if character == quote and not _is_escaped(state.src, position):
+                quote = ""
+            position += 1
+            continue
+        if character in {'"', "'", "`"}:
+            quote = character
+        elif character == "{":
+            brace_depth += 1
+        elif character == "}" and brace_depth:
+            brace_depth -= 1
+        elif (
+            character == "/"
+            and brace_depth == 0
+            and position + 1 < len(state.src)
+            and state.src[position + 1] == ">"
+        ):
+            closing_position = position + 2
+            break
+        elif character == ">" and brace_depth == 0:
+            # 開始タグが `/>` ではなく `>` で閉じた＝自己終了ではない。
+            # ここで抜けないと、次に現れる `/>` まで走査が続き、
+            # 間にある本文を丸ごと飲み込む（`<style>` が 85 行先の
+            # `<img ... />` まで伸び、その間の段落が検査されなかった。2026-09-23）。
+            # 通常の html_block 規則に任せる。
+            return False
+        position += 1
+
+    if closing_position is None:
+        return False
+
+    closing_line = start_line
+    while (
+        closing_line < end_line
+        and closing_position > state.eMarks[closing_line]
+    ):
+        closing_line += 1
+    if closing_line >= end_line:
+        return False
+    if state.src[closing_position:state.eMarks[closing_line]].strip():
+        return False
+
+    next_line = closing_line + 1
+    if silent:
+        return True
+
+    token = state.push("html_block", "", 0)
+    token.map = [start_line, next_line]
+    token.content = state.getLines(start_line, next_line, 0, False)
+    state.line = next_line
+    return True
+
+
+def _create_markdown_parser() -> MarkdownIt:
+    """blog lint 用の CommonMark パーサを作る。"""
+    parser = MarkdownIt("commonmark").enable("table")
+    parser.block.ruler.before(
+        "table",
+        "front_matter",
+        _front_matter_rule,
+        {"alt": []},
+    )
+    # CommonMark の HTML block は自己終了タグの後ろの本文まで空行まで
+    # 取り込むため、MDX の自己終了タグだけは一タグ単位で先に閉じる。
+    parser.block.ruler.before(
+        "html_block",
+        "self_closing_html_block",
+        _self_closing_html_block_rule,
+        {"alt": ["paragraph", "reference", "blockquote"]},
+    )
+    return parser
+
+
+_MARKDOWN = _create_markdown_parser()
 
 
 def non_prose_ranges(text: str) -> list[TextRange]:
-    """blog の lint 対象外にする全文オフセット範囲を返す"""
-    frontmatter_ranges = _frontmatter_ranges(text)
-    fenced_code_ranges = _fenced_code_ranges(text, frontmatter_ranges)
-    structural_ranges = _merge_ranges(
-        [*frontmatter_ranges, *fenced_code_ranges]
-    )
-
-    inline_code_ranges = _inline_code_ranges(text, structural_ranges)
-    code_ranges = _merge_ranges([*structural_ranges, *inline_code_ranges])
-
-    url_ranges = _url_ranges(text, code_ranges)
-    image_ranges = _markdown_image_ranges(text, code_ranges)
-    jsx_ranges = _jsx_attribute_ranges(
-        text,
-        _merge_ranges([*code_ranges, *url_ranges, *image_ranges]),
-    )
-    return _merge_ranges(
-        [*code_ranges, *url_ranges, *image_ranges, *jsx_ranges]
-    )
+    """blog の lint 対象外にする全文オフセット範囲を返す。"""
+    environment: dict[str, object] = {}
+    tokens = _MARKDOWN.parse(text, environment)
+    ranges = [
+        *_block_non_prose_ranges(text, tokens),
+        *_inline_non_prose_ranges(text, tokens),
+        *_reference_definition_ranges(text, environment),
+    ]
+    structural_ranges = _merge_ranges(ranges)
+    return _merge_ranges([
+        *structural_ranges,
+        *_raw_url_ranges(text, structural_ranges),
+    ])
 
 
 def span_overlaps_ranges(
@@ -45,7 +192,7 @@ def span_overlaps_ranges(
     end: int,
     ranges: list[TextRange],
 ) -> bool:
-    """指定範囲が lint 対象外の範囲と重なるかを返す"""
+    """指定範囲が lint 対象外の範囲と重なるかを返す。"""
     return any(
         start < range_end and range_start < end
         for range_start, range_end in ranges
@@ -53,7 +200,7 @@ def span_overlaps_ranges(
 
 
 def mask_ranges(text: str, ranges: list[TextRange]) -> str:
-    """改行と位置情報を保ったまま指定範囲を空白に置き換える"""
+    """改行と位置情報を保ったまま指定範囲を空白に置き換える。"""
     characters = list(text)
     for start, end in ranges:
         for position in range(start, end):
@@ -63,380 +210,308 @@ def mask_ranges(text: str, ranges: list[TextRange]) -> str:
 
 
 def line_start_offsets(text: str) -> list[int]:
-    """各物理行の先頭に対応する全文オフセットを返す"""
+    """各物理行の先頭に対応する全文オフセットを返す。"""
     offsets = [0]
     offsets.extend(match.end() for match in re.finditer(r"\n", text))
     return offsets
 
 
-def _frontmatter_ranges(text: str) -> list[TextRange]:
-    """先頭の YAML frontmatter が占める範囲を返す"""
-    lines = _line_ranges(text)
-    if not lines:
-        return []
-
-    first_start, first_end = lines[0]
-    first_line = _line_content(text, first_start, first_end)
-    if _FRONTMATTER_OPEN_PATTERN.fullmatch(first_line) is None:
-        return []
-
-    for start, end in lines[1:]:
-        line = _line_content(text, start, end)
-        if _FRONTMATTER_CLOSE_PATTERN.fullmatch(line) is not None:
-            return [(0, end)]
-    return [(0, len(text))]
-
-
-def _fenced_code_ranges(
+def _block_non_prose_ranges(
     text: str,
-    protected_ranges: list[TextRange],
+    tokens: list[Token],
 ) -> list[TextRange]:
-    """フェンスされたコードブロックが占める範囲を返す"""
-    ranges: list[TextRange] = []
-    opening_start: int | None = None
-    fence_character = ""
-    fence_length = 0
-
-    for start, end in _line_ranges(text):
-        if span_overlaps_ranges(start, end, protected_ranges):
-            continue
-
-        line = _strip_markdown_containers(
-            _line_content(text, start, end)
-        )
-        fence_match = _FENCE_PATTERN.fullmatch(line)
-        if opening_start is None:
-            if fence_match is None:
-                continue
-            marker = fence_match.group("marker")
-            opening_start = start
-            fence_character = marker[0]
-            fence_length = len(marker)
-            continue
-
-        if fence_match is None:
-            continue
-        marker = fence_match.group("marker")
-        if (
-            marker[0] == fence_character
-            and len(marker) >= fence_length
-            and not fence_match.group("suffix").strip()
-        ):
-            ranges.append((opening_start, end))
-            opening_start = None
-            fence_character = ""
-            fence_length = 0
-
-    if opening_start is not None:
-        ranges.append((opening_start, len(text)))
-    return ranges
-
-
-def _inline_code_ranges(
-    text: str,
-    protected_ranges: list[TextRange],
-) -> list[TextRange]:
-    """同数のバッククォートで閉じたコードスパンを返す"""
-    ranges: list[TextRange] = []
-    for segment_start, segment_end in _prose_segments(
-        len(text),
-        protected_ranges,
-    ):
-        runs = list(
-            _BACKTICK_RUN_PATTERN.finditer(
-                text,
-                segment_start,
-                segment_end,
-            )
-        )
-        run_index = 0
-        while run_index < len(runs):
-            opening = runs[run_index]
-            closing_index = run_index + 1
-            while closing_index < len(runs):
-                closing = runs[closing_index]
-                if len(closing.group(0)) == len(opening.group(0)):
-                    ranges.append((opening.start(), closing.end()))
-                    run_index = closing_index + 1
-                    break
-                closing_index += 1
-            else:
-                run_index += 1
-    return ranges
-
-
-def _url_ranges(
-    text: str,
-    protected_ranges: list[TextRange],
-) -> list[TextRange]:
-    """素の URL と Markdown リンク先が占める範囲を返す"""
-    ranges = [
-        destination
-        for _, destination, _, _ in _markdown_link_parts(
-            text,
-            protected_ranges,
-        )
-        if destination is not None
+    """コード・HTML・front matter のブロック範囲を返す。"""
+    offsets = line_start_offsets(text)
+    return [
+        _line_map_range(text, offsets, token.map)
+        for token in tokens
+        if token.type in _BLOCK_TOKEN_TYPES and token.map is not None
     ]
-    ranges.extend(
-        match.span()
-        for match in _RAW_URL_PATTERN.finditer(text)
-        if not span_overlaps_ranges(
-            match.start(),
-            match.end(),
-            protected_ranges,
-        )
-    )
-    return ranges
 
 
-def _markdown_image_ranges(
+def _inline_non_prose_ranges(
     text: str,
-    protected_ranges: list[TextRange],
+    tokens: list[Token],
 ) -> list[TextRange]:
-    """Markdown 画像の alt と title が占める範囲を返す"""
+    """インライン子トークンをソース順に追って非本文範囲を返す。"""
+    offsets = line_start_offsets(text)
     ranges: list[TextRange] = []
-    for is_image, _, alt_range, title_range in _markdown_link_parts(
-        text,
-        protected_ranges,
-    ):
-        if not is_image:
+    cursor = 0
+    link_kinds: list[str] = []
+
+    for token in tokens:
+        if token.type != "inline" or token.map is None:
             continue
-        if alt_range is not None:
-            ranges.append(alt_range)
-        if title_range is not None:
-            ranges.append(title_range)
-    return ranges
+        block_start, block_end = _line_map_range(text, offsets, token.map)
+        cursor = max(cursor, block_start)
 
-
-def _jsx_attribute_ranges(
-    text: str,
-    protected_ranges: list[TextRange],
-) -> list[TextRange]:
-    """JSX の alt・title 属性値が占める範囲を返す"""
-    ranges: list[TextRange] = []
-    position = 0
-    while position < len(text):
-        tag_match = _JSX_TAG_START_PATTERN.search(text, position)
-        if tag_match is None:
-            break
-        protected_end = _containing_range_end(
-            tag_match.start(),
-            protected_ranges,
-        )
-        if protected_end is not None:
-            position = protected_end
-            continue
-        if tag_match.group("closing"):
-            position = _find_tag_end(text, tag_match.end())
-            continue
-
-        position = tag_match.end()
-        while position < len(text):
-            protected_end = _containing_range_end(position, protected_ranges)
-            if protected_end is not None:
-                position = protected_end
-                continue
-            if text.startswith("/>", position):
-                position += 2
-                break
-            if text[position] == ">":
-                position += 1
-                break
-            if text[position].isspace():
-                position += 1
-                continue
-            if text[position] == "{":
-                expression_end = _find_jsx_expression_end(text, position)
-                position = expression_end + 1
-                continue
-
-            attribute_match = _JSX_ATTRIBUTE_NAME_PATTERN.match(
-                text,
-                position,
-            )
-            if attribute_match is None:
-                position += 1
-                continue
-            attribute_name = attribute_match.group(0).lower()
-            position = attribute_match.end()
-            while position < len(text) and text[position].isspace():
-                position += 1
-            if position >= len(text) or text[position] != "=":
-                continue
-            position += 1
-            while position < len(text) and text[position].isspace():
-                position += 1
-            if position >= len(text):
-                break
-
-            value_start = position
-            value_end = position
-            if text[position] in {'"', "'"}:
-                quote = text[position]
-                closing_quote = _find_unescaped_character(
+        for child in token.children or []:
+            if child.type == "text":
+                cursor = _advance_over_rendered_text(
                     text,
-                    quote,
-                    position + 1,
+                    child.content,
+                    cursor,
+                    block_end,
                 )
-                value_start = position + 1
-                value_end = (
-                    len(text) if closing_quote is None else closing_quote
+                continue
+            if child.type in {"softbreak", "hardbreak"}:
+                newline = text.find("\n", cursor, block_end)
+                cursor = block_end if newline < 0 else newline + 1
+                continue
+            if child.type == "code_inline":
+                span = _locate_code_span(
+                    text,
+                    child.markup,
+                    cursor,
+                    block_end,
                 )
-                position = (
-                    len(text) if closing_quote is None else closing_quote + 1
+                if span is not None:
+                    ranges.append(span)
+                    cursor = span[1]
+                continue
+            if child.type == "image":
+                span = _locate_image_span(text, cursor, block_end)
+                if span is not None:
+                    ranges.append(span)
+                    cursor = span[1]
+                continue
+            if child.type == "html_inline":
+                span = _locate_literal(
+                    text,
+                    child.content,
+                    cursor,
+                    block_end,
                 )
-            elif text[position] == "{":
-                expression_end = _find_jsx_expression_end(text, position)
-                value_end = min(expression_end + 1, len(text))
-                position = value_end
-            else:
-                while (
-                    position < len(text)
-                    and not text[position].isspace()
-                    and text[position] != ">"
-                ):
-                    position += 1
-                value_end = position
+                if span is not None:
+                    ranges.append(span)
+                    cursor = span[1]
+                continue
+            if child.type == "link_open":
+                kind = "autolink" if child.markup == "autolink" else "link"
+                opening = "<" if kind == "autolink" else "["
+                position = _find_unescaped(text, opening, cursor, block_end)
+                if position is not None:
+                    ranges.append((position, position + 1))
+                    cursor = position + 1
+                link_kinds.append(kind)
+                continue
+            if child.type == "link_close":
+                kind = link_kinds.pop() if link_kinds else "link"
+                span = _locate_link_close(text, kind, cursor, block_end)
+                if span is not None:
+                    ranges.append(span)
+                    cursor = span[1]
+                continue
+            if child.type in _INLINE_FORMAT_TOKEN_TYPES and child.markup:
+                span = _locate_literal(
+                    text,
+                    child.markup,
+                    cursor,
+                    block_end,
+                )
+                if span is not None:
+                    cursor = span[1]
 
-            if (
-                attribute_name in _JSX_NON_PROSE_ATTRIBUTES
-                and value_start < value_end
-            ):
-                ranges.append((value_start, value_end))
     return ranges
 
 
-def _markdown_link_parts(
+def _reference_definition_ranges(
+    text: str,
+    environment: dict[str, object],
+) -> list[TextRange]:
+    """参照リンク定義をパーサが記録した行範囲から返す。"""
+    references = environment.get("references")
+    if not isinstance(references, dict):
+        return []
+
+    offsets = line_start_offsets(text)
+    ranges: list[TextRange] = []
+    seen_maps: set[tuple[int, int]] = set()
+    for reference in references.values():
+        if not isinstance(reference, dict):
+            continue
+        line_map = reference.get("map")
+        if (
+            not isinstance(line_map, list)
+            or len(line_map) != 2
+            or not all(isinstance(value, int) for value in line_map)
+        ):
+            continue
+        map_key = (line_map[0], line_map[1])
+        if map_key in seen_maps:
+            continue
+        seen_maps.add(map_key)
+        ranges.append(_line_map_range(text, offsets, line_map))
+    return ranges
+
+
+def _raw_url_ranges(
     text: str,
     protected_ranges: list[TextRange],
-) -> list[
-    tuple[bool, TextRange | None, TextRange | None, TextRange | None]
-]:
-    """Markdown リンクと画像を構成する範囲へ分解する"""
-    parts = []
-    for match in _MARKDOWN_LINK_START_PATTERN.finditer(text):
-        if _is_escaped(text, match.start()) or span_overlaps_ranges(
-            match.start(),
-            match.end(),
-            protected_ranges,
-        ):
-            continue
-        is_image = match.group(0).startswith("!")
-        bracket_start = match.end() - 1
-        bracket_end = _find_matching_delimiter(
-            text,
-            bracket_start,
-            "[",
-            "]",
-            protected_ranges,
-        )
-        if bracket_end is None:
-            continue
-        parenthesis_start = bracket_end + 1
-        if (
-            parenthesis_start >= len(text)
-            or text[parenthesis_start] != "("
-        ):
-            continue
-        parenthesis_end = _find_link_parenthesis_end(
-            text,
-            parenthesis_start,
-            protected_ranges,
-        )
-        if parenthesis_end is None:
-            continue
-
-        destination, title = _link_destination_and_title(
-            text,
-            parenthesis_start + 1,
-            parenthesis_end,
-        )
-        alt = (bracket_start + 1, bracket_end) if is_image else None
-        parts.append((is_image, destination, alt, title))
-    return parts
-
-
-def _link_destination_and_title(
-    text: str,
-    start: int,
-    end: int,
-) -> tuple[TextRange | None, TextRange | None]:
-    """リンク括弧内からリンク先と任意の title を取り出す"""
-    position = start
-    while position < end and text[position].isspace():
-        position += 1
-    if position >= end:
-        return None, None
-
-    if text[position] == "<":
-        destination_start = position + 1
-        destination_end = text.find(">", destination_start, end)
-        if destination_end < 0:
-            return None, None
-        position = destination_end + 1
-    else:
-        destination_start = position
-        nested_parentheses = 0
-        while position < end:
-            character = text[position]
-            if character == "\\":
-                position += 2
-                continue
-            if character == "(":
-                nested_parentheses += 1
-            elif character == ")" and nested_parentheses:
-                nested_parentheses -= 1
-            elif character.isspace() and nested_parentheses == 0:
+) -> list[TextRange]:
+    """本文 text トークンに残った素の URL の範囲を返す。"""
+    searchable_text = mask_ranges(text, protected_ranges)
+    ranges: list[TextRange] = []
+    for match in _RAW_URL_START_PATTERN.finditer(searchable_text):
+        position = match.end()
+        brackets: list[str] = []
+        while position < len(searchable_text):
+            character = searchable_text[position]
+            if character.isspace() or character in '<>"\'':
                 break
+            if character in "([{":
+                brackets.append({"(": ")", "[": "]", "{": "}"}[character])
+            elif character in ")]}":
+                if not brackets or brackets[-1] != character:
+                    break
+                brackets.pop()
             position += 1
-        destination_end = position
 
-    while position < end and text[position].isspace():
-        position += 1
-    title: TextRange | None = None
-    if position < end and text[position] in {'"', "'"}:
-        quote = text[position]
-        title_end = _find_unescaped_character(
-            text,
-            quote,
-            position + 1,
-            end,
-        )
-        if title_end is not None:
-            title = (position + 1, title_end)
-    elif position < end and text[position] == "(":
-        title_end = _find_matching_delimiter(
-            text,
-            position,
-            "(",
-            ")",
-            [],
-            limit=end,
-        )
-        if title_end is not None:
-            title = (position + 1, title_end)
+        while (
+            position > match.start()
+            and searchable_text[position - 1] in _URL_TRAILING_PUNCTUATION
+        ):
+            position -= 1
+        ranges.append((match.start(), position))
+    return ranges
 
-    destination = (
-        (destination_start, destination_end)
-        if destination_start < destination_end
-        else None
-    )
-    return destination, title
+
+def _line_map_range(
+    text: str,
+    offsets: list[int],
+    line_map: list[int],
+) -> TextRange:
+    """markdown-it の行 map を全文オフセットへ変換する。"""
+    start_line, end_line = line_map
+    start = offsets[start_line] if start_line < len(offsets) else len(text)
+    end = offsets[end_line] if end_line < len(offsets) else len(text)
+    return start, end
+
+
+def _advance_over_rendered_text(
+    source: str,
+    rendered: str,
+    cursor: int,
+    limit: int,
+) -> int:
+    """エスケープと文字参照を考慮して text 子の末尾まで進める。"""
+    source_position = cursor
+    rendered_position = 0
+    while rendered_position < len(rendered) and source_position < limit:
+        if (
+            source[source_position] == "\\"
+            and source_position + 1 < limit
+            and source[source_position + 1] == rendered[rendered_position]
+        ):
+            source_position += 2
+            rendered_position += 1
+            continue
+        if source[source_position] == "&":
+            semicolon = source.find(";", source_position + 1, limit)
+            if semicolon >= 0:
+                decoded = unescape(source[source_position:semicolon + 1])
+                if rendered.startswith(decoded, rendered_position):
+                    source_position = semicolon + 1
+                    rendered_position += len(decoded)
+                    continue
+        if source[source_position] == rendered[rendered_position]:
+            source_position += 1
+            rendered_position += 1
+            continue
+        source_position += 1
+    return source_position
+
+
+def _locate_code_span(
+    text: str,
+    marker: str,
+    cursor: int,
+    limit: int,
+) -> TextRange | None:
+    """code_inline 子に対応するソース範囲を返す。"""
+    opening = text.find(marker, cursor, limit)
+    if opening < 0:
+        return None
+    closing = text.find(marker, opening + len(marker), limit)
+    if closing < 0:
+        return None
+    return opening, closing + len(marker)
+
+
+def _locate_image_span(
+    text: str,
+    cursor: int,
+    limit: int,
+) -> TextRange | None:
+    """image 子に対応するインライン画像全体の範囲を返す。"""
+    opening = _find_unescaped(text, "![", cursor, limit)
+    if opening is None:
+        return None
+    label_end = _find_matching_delimiter(text, opening + 1, "[", "]", limit)
+    if label_end is None:
+        return None
+
+    end = label_end + 1
+    if end < limit and text[end] == "(":
+        destination_end = _find_link_parenthesis_end(text, end, limit)
+        if destination_end is not None:
+            end = destination_end + 1
+    elif end < limit and text[end] == "[":
+        reference_end = _find_matching_delimiter(text, end, "[", "]", limit)
+        if reference_end is not None:
+            end = reference_end + 1
+    return opening, end
+
+
+def _locate_link_close(
+    text: str,
+    kind: str,
+    cursor: int,
+    limit: int,
+) -> TextRange | None:
+    """link_close と後続するリンク先・参照ラベルの範囲を返す。"""
+    closing_character = ">" if kind == "autolink" else "]"
+    closing = _find_unescaped(text, closing_character, cursor, limit)
+    if closing is None:
+        return None
+    end = closing + 1
+    if kind == "autolink":
+        return closing, end
+
+    if end < limit and text[end] == "(":
+        destination_end = _find_link_parenthesis_end(text, end, limit)
+        if destination_end is not None:
+            end = destination_end + 1
+    elif end < limit and text[end] == "[":
+        reference_end = _find_matching_delimiter(text, end, "[", "]", limit)
+        if reference_end is not None:
+            end = reference_end + 1
+    return closing, end
+
+
+def _locate_literal(
+    text: str,
+    literal: str,
+    cursor: int,
+    limit: int,
+) -> TextRange | None:
+    """現在位置より後ろにあるトークン文字列の範囲を返す。"""
+    start = text.find(literal, cursor, limit)
+    if start < 0:
+        return None
+    return start, start + len(literal)
 
 
 def _find_link_parenthesis_end(
     text: str,
     start: int,
-    protected_ranges: list[TextRange],
+    limit: int,
 ) -> int | None:
-    """引用符と入れ子を考慮してリンクの閉じ括弧を探す"""
+    """引用符と入れ子を考慮してリンク先の閉じ括弧を探す。"""
     depth = 1
     quote = ""
     position = start + 1
-    while position < len(text):
-        if _containing_range_end(position, protected_ranges) is not None:
-            return None
+    while position < limit:
         character = text[position]
         if quote:
             if character == quote and not _is_escaped(text, position):
@@ -460,17 +535,12 @@ def _find_matching_delimiter(
     start: int,
     opening: str,
     closing: str,
-    protected_ranges: list[TextRange],
-    *,
-    limit: int | None = None,
+    limit: int,
 ) -> int | None:
-    """エスケープと入れ子を考慮して対応する閉じ記号を探す"""
+    """エスケープと入れ子を考慮して対応する閉じ記号を探す。"""
     depth = 1
-    end = len(text) if limit is None else limit
     position = start + 1
-    while position < end:
-        if _containing_range_end(position, protected_ranges) is not None:
-            return None
+    while position < limit:
         character = text[position]
         if character == "\\":
             position += 2
@@ -485,65 +555,26 @@ def _find_matching_delimiter(
     return None
 
 
-def _find_jsx_expression_end(text: str, start: int) -> int:
-    """文字列とコメントを飛ばしながら JSX 式の閉じ波括弧を探す"""
-    depth = 0
-    quote = ""
-    position = start
-    while position < len(text):
-        character = text[position]
-        if quote:
-            if character == quote and not _is_escaped(text, position):
-                quote = ""
-            position += 1
-            continue
-        if text.startswith("//", position):
-            newline = text.find("\n", position + 2)
-            position = len(text) if newline < 0 else newline + 1
-            continue
-        if text.startswith("/*", position):
-            comment_end = text.find("*/", position + 2)
-            position = len(text) if comment_end < 0 else comment_end + 2
-            continue
-        if character in {'"', "'", "`"}:
-            quote = character
-        elif character == "{":
-            depth += 1
-        elif character == "}":
-            depth -= 1
-            if depth == 0:
-                return position
-        position += 1
-    return len(text) - 1
-
-
-def _find_tag_end(text: str, start: int) -> int:
-    """閉じ JSX タグの末尾直後を返す"""
-    end = text.find(">", start)
-    return len(text) if end < 0 else end + 1
-
-
-def _find_unescaped_character(
+def _find_unescaped(
     text: str,
-    character: str,
+    needle: str,
     start: int,
-    end: int | None = None,
+    limit: int,
 ) -> int | None:
-    """エスケープされていない指定文字を探す"""
-    limit = len(text) if end is None else end
+    """カーソル以降にあるエスケープされていない文字列を探す。"""
     position = start
     while position < limit:
-        position = text.find(character, position, limit)
+        position = text.find(needle, position, limit)
         if position < 0:
             return None
         if not _is_escaped(text, position):
             return position
-        position += 1
+        position += len(needle)
     return None
 
 
 def _is_escaped(text: str, position: int) -> bool:
-    """指定位置の文字がバックスラッシュでエスケープされているか返す"""
+    """指定位置の文字がバックスラッシュでエスケープされているか返す。"""
     backslash_count = 0
     position -= 1
     while position >= 0 and text[position] == "\\":
@@ -552,67 +583,8 @@ def _is_escaped(text: str, position: int) -> bool:
     return backslash_count % 2 == 1
 
 
-def _strip_markdown_containers(line: str) -> str:
-    """フェンスより前の引用記号・リスト記号・インデントを外す"""
-    remainder = line.lstrip(" \t")
-    while remainder.startswith(">"):
-        remainder = remainder[1:]
-        if remainder.startswith((" ", "\t")):
-            remainder = remainder[1:]
-        remainder = remainder.lstrip(" \t")
-    list_match = re.match(r"(?:[-+*]|\d+[.)])[ \t]+", remainder)
-    if list_match is not None:
-        remainder = remainder[list_match.end():].lstrip(" \t")
-    while remainder.startswith(">"):
-        remainder = remainder[1:].lstrip(" \t")
-    return remainder
-
-
-def _line_ranges(text: str) -> list[TextRange]:
-    """改行を含む物理行の全文オフセット範囲を返す"""
-    starts = line_start_offsets(text)
-    return [
-        (start, starts[index + 1] if index + 1 < len(starts) else len(text))
-        for index, start in enumerate(starts)
-    ]
-
-
-def _line_content(text: str, start: int, end: int) -> str:
-    """物理行から末尾の改行コードだけを除いて返す"""
-    return text[start:end].rstrip("\r\n")
-
-
-def _prose_segments(
-    text_length: int,
-    protected_ranges: list[TextRange],
-) -> list[TextRange]:
-    """保護範囲を除いた連続領域を返す"""
-    segments: list[TextRange] = []
-    position = 0
-    for start, end in _merge_ranges(protected_ranges):
-        if position < start:
-            segments.append((position, start))
-        position = max(position, end)
-    if position < text_length:
-        segments.append((position, text_length))
-    return segments
-
-
-def _containing_range_end(
-    position: int,
-    ranges: list[TextRange],
-) -> int | None:
-    """指定位置を含む範囲の末尾を返す"""
-    for start, end in ranges:
-        if start <= position < end:
-            return end
-        if start > position:
-            break
-    return None
-
-
 def _merge_ranges(ranges: list[TextRange]) -> list[TextRange]:
-    """重複または隣接する範囲を統合する"""
+    """重複または隣接する範囲を統合する。"""
     merged: list[TextRange] = []
     for start, end in sorted(ranges):
         if start >= end:

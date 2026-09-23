@@ -53,35 +53,44 @@ NOTATION_RULES = [
 ]
 
 
-BLOG_UNOFFICIAL_TRANSLATIONS = {
-    "状態機械": "ステートマシン",
-}
+# 非公式訳語の辞書。**書き手が実際に使う語だけを入れる。**
+# 「状態機械」は Claude が書いた語で、書き手が「聞き慣れていない」と指摘したもの。
+# 書き手の文章には現れないため、検査するルールとしては筋違いだった（2026-09-23 に取り下げ）。
+# Claude 自身が避けるべき語は blog-voice の STYLE.md に置く。
+BLOG_UNOFFICIAL_TRANSLATIONS: dict[str, str] = {}
 
-BLOG_NOTATION_RULES = [
-    {
-        "preferred": "Eufy",
-        "variants": [r"(?<![A-Za-z0-9])eufy(?![A-Za-z0-9])"],
-        "note": "ブランドの正式表記です",
-        "case_sensitive": True,
-        "excluded_terms": ("eufy-security-client",),
-        "rule_name": "brand-capitalization",
-    },
-    {
-        "preferred": "ニワトリ",
-        "variants": [r"にわとり", r"(?<![一-鿿々〆ヶ])鶏(?![一-鿿々〆ヶ])"],
-        "note": "カタカナ表記に統一します",
-        "rule_name": "chicken-notation",
-    },
-    *[
+def build_blog_notation_rules() -> list[dict]:
+    """blog プロファイルの表記ルールを組み立てる。
+
+    モジュール読み込み時ではなく呼び出し時に作る。辞書（BLOG_UNOFFICIAL_TRANSLATIONS）へ
+    語を足したときに、その場で効くようにするため。
+    """
+    return [
         {
-            "preferred": preferred,
-            "variants": [re.escape(variant)],
-            "note": "公式に使われる用語に統一します",
-            "rule_name": "unofficial-translation",
-        }
-        for variant, preferred in BLOG_UNOFFICIAL_TRANSLATIONS.items()
-    ],
-]
+            "preferred": "Eufy",
+            "variants": [r"(?<![A-Za-z0-9])eufy(?![A-Za-z0-9])"],
+            "case_sensitive": True,
+            "rule_name": "brand-capitalization",
+            "needs_review": True,
+        },
+        {
+            "preferred": "ニワトリ",
+            "variants": [r"にわとり", r"鶏"],
+            "rule_name": "chicken-notation",
+            "needs_review": True,
+            "avoid_kanji_compound": True,
+        },
+        *[
+            {
+                "preferred": preferred,
+                "variants": [re.escape(variant)],
+                "rule_name": "unofficial-translation",
+                "needs_review": True,
+                "avoid_kanji_compound": True,
+            }
+            for variant, preferred in BLOG_UNOFFICIAL_TRANSLATIONS.items()
+        ],
+    ]
 
 _BLOG_EXCLUDED_BASE_RULES = {
     "サーバー",
@@ -107,6 +116,14 @@ _BLOG_EXCLUDED_BASE_RULES = {
     "Amazon EKS",
 }
 _JAPANESE_CHARACTER_CLASS = "ぁ-んァ-ヶ一-鿿々〆ヶー"
+_KANJI_PATTERN = re.compile(r"[一-鿿々〆ヶ]")
+_SLASH_JAPANESE_TERM = r"(?:[ぁ-ん]+|[ァ-ヶー]+|[一-鿿々〆ヶ]+)"
+_SLASH_TERM = rf"(?:[A-Za-z][A-Za-z0-9+#-]*|[0-9]+|{_SLASH_JAPANESE_TERM})"
+_SLASH_COORDINATION_PATTERN = re.compile(
+    rf"(?<![A-Za-z0-9{_JAPANESE_CHARACTER_CLASS}/])"
+    rf"(?P<left>{_SLASH_TERM})/(?P<right>{_SLASH_TERM})"
+    rf"(?![A-Za-z0-9/])"
+)
 _ALNUM_JAPANESE_BOUNDARY_PATTERN = re.compile(
     rf"(?:(?<=[A-Za-z0-9])(?=[{_JAPANESE_CHARACTER_CLASS}])|"
     rf"(?<=[{_JAPANESE_CHARACTER_CLASS}])(?=[A-Za-z0-9]))"
@@ -153,7 +170,14 @@ def check_notation(text: str, profile: str = "blog") -> list[LintIssue]:
             for line_idx, masked_line in enumerate(masked_lines):
                 line = lines[line_idx]
                 for match in pattern.finditer(masked_line):
-                    if _matches_excluded_term(line, match.start(), rule):
+                    if (
+                        rule.get("avoid_kanji_compound", False)
+                        and _has_adjacent_kanji(
+                            line,
+                            match.start(),
+                            match.end(),
+                        )
+                    ):
                         continue
 
                     matched_text = match.group(0)
@@ -170,16 +194,31 @@ def check_notation(text: str, profile: str = "blog") -> list[LintIssue]:
                         if not any(w in context_window for w in context_words):
                             continue
 
+                    rule_name = rule.get(
+                        "rule_name",
+                        f"表記ブレ: {preferred}",
+                    )
+                    needs_review = rule.get("needs_review", False)
+                    message = (
+                        _review_message(rule_name, matched_text, preferred)
+                        if needs_review
+                        else (
+                            f"「{matched_text}」→「{preferred}」に統一を推奨。"
+                            f"{note}"
+                        )
+                    )
                     issues.append(LintIssue(
                         line_number=line_idx + 1,
                         column=match.start() + 1,
                         matched_text=matched_text,
                         category="notation",
-                        rule_name=rule.get("rule_name", f"表記ブレ: {preferred}"),
-                        message=f"「{matched_text}」→「{preferred}」に統一を推奨。{note}",
-                        suggestion=preferred,
+                        rule_name=rule_name,
+                        message=message,
+                        suggestion=None if needs_review else preferred,
+                        needs_review=needs_review,
                     ))
 
+    issues.extend(_check_slash_coordination(lines, masked_lines))
     issues.extend(_check_alnum_japanese_spacing(lines, masked_lines))
 
     return issues
@@ -247,16 +286,69 @@ def _notation_rules_for_profile(profile: str) -> list[dict]:
         for rule in NOTATION_RULES
         if rule["preferred"] not in _BLOG_EXCLUDED_BASE_RULES
     ]
-    rules.extend(BLOG_NOTATION_RULES)
+    rules.extend(build_blog_notation_rules())
     return rules
 
 
-def _matches_excluded_term(line: str, start: int, rule: dict) -> bool:
-    """ライブラリ名などの除外語に含まれるかを返す"""
-    return any(
-        line.startswith(term, start)
-        for term in rule.get("excluded_terms", ())
+def _review_message(
+    rule_name: str,
+    matched_text: str,
+    preferred: str,
+) -> str:
+    """文脈確認が必要な表記ルールのメッセージを返す。"""
+    if rule_name == "brand-capitalization":
+        return (
+            f"「{matched_text}」は製品名なら「{preferred}」、ライブラリ名・"
+            "アカウント名・URLならそのままです。文脈に合う表記か"
+            "確認してください。"
+        )
+    if rule_name == "chicken-notation":
+        return (
+            f"「{matched_text}」をひらがな・漢字・カタカナのどれで書くかは"
+            "文脈で決まります。表記を確認してください。"
+        )
+    return (
+        f"「{matched_text}」が「{preferred}」を指すかは文脈で決まります。"
+        "意図した用語か確認してください。"
     )
+
+
+def _has_adjacent_kanji(line: str, start: int, end: int) -> bool:
+    """対象語の直前または直後が漢字かを返す。"""
+    before_is_kanji = (
+        start > 0 and _KANJI_PATTERN.fullmatch(line[start - 1]) is not None
+    )
+    after_is_kanji = (
+        end < len(line) and _KANJI_PATTERN.fullmatch(line[end]) is not None
+    )
+    return before_is_kanji or after_is_kanji
+
+
+def _check_slash_coordination(
+    lines: list[str],
+    masked_lines: list[str],
+) -> list[LintIssue]:
+    """語をつなぐスラッシュを文脈確認として報告する。"""
+    issues = []
+    for line_index, masked_line in enumerate(masked_lines):
+        line = lines[line_index]
+        for match in _SLASH_COORDINATION_PATTERN.finditer(masked_line):
+            matched_text = line[match.start():match.end()]
+            issues.append(LintIssue(
+                line_number=line_index + 1,
+                column=match.start() + 1,
+                matched_text=matched_text,
+                category="notation",
+                rule_name="slash-coordination",
+                message=(
+                    f"「{matched_text}」のスラッシュが並列、固有表記、"
+                    "パスのどれに当たるかは文脈で決まります。表記を"
+                    "確認してください。"
+                ),
+                suggestion=None,
+                needs_review=True,
+            ))
+    return issues
 
 
 def _check_alnum_japanese_spacing(

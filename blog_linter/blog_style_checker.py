@@ -26,20 +26,45 @@ _OPEN_KANJI_PATTERN = re.compile(
         for expression in sorted(OPEN_KANJI_RULES, key=len, reverse=True)
     )
 )
+_KANJI_BOUNDARY_OPEN_KANJI_RULES = {
+    "事が出来る",
+    "事ができる",
+    "の為",
+}
 _SENTENCE_PATTERN = re.compile(r"[^。！？!?\n]*[。！？!?]+")
 _POLITE_ENDING_PATTERN = re.compile(
     r"(?:ませんでした|でした|ました|ません|でしょう|ください|です|ます)"
     r"[。！？!?]+$"
 )
+_PLAIN_ENDINGS = (
+    "である",
+    "だ",
+    "する",
+    "した",
+    "しない",
+    "できる",
+    "できた",
+    "なる",
+    "なった",
+    "ある",
+    "ない",
+    "いる",
+    "いた",
+    "書く",
+    "読む",
+    "使う",
+)
+# 形容詞の終止形は体言止めと機械的に区別できないため、意図的に数えない。
 _PLAIN_ENDING_PATTERN = re.compile(
-    r"(?:ではなかった|じゃなかった|である|ではない|じゃない|"
-    r"なかった|しない|する|した|だった|ない|だ|た|る|う|く|ぐ|"
-    r"す|つ|ぬ|ぶ|む)[。！？!?]+$"
+    rf"(?:{'|'.join(re.escape(ending) for ending in _PLAIN_ENDINGS)})"
+    r"[。！？!?]+$"
 )
 _COMMA_SENTENCE_JOIN_PATTERN = re.compile(
-    r"[）)]、\s*(?:これ|それ|あれ|この|その|一方|ただし|なお|"
-    r"また(?!は)|次に|そして)"
+    r"[）)]、\s*(?P<connector>そのため|したがって|しかし|ただし|"
+    r"これ|それ|なお|また)"
 )
+_EXCLUDED_CONNECTOR_PREFIXES = ("その他", "その際", "その後", "その上")
+_EMPHASIS_MARKERS = ("**", "__", "~~", "*", "_")
 _HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s+")
 _LIST_ITEM_PATTERN = re.compile(r"^\s*(?:[-+*]|\d+[.)])\s+")
 _KANJI_PATTERN = re.compile(r"[一-鿿々〆ヶ]")
@@ -68,9 +93,13 @@ def _check_open_kanji(
         for match in _OPEN_KANJI_PATTERN.finditer(masked_line):
             matched_text = line[match.start():match.end()]
             if (
-                matched_text.startswith("事")
-                and match.start() > 0
-                and _KANJI_PATTERN.fullmatch(line[match.start() - 1])
+                matched_text in _KANJI_BOUNDARY_OPEN_KANJI_RULES
+                and _is_kanji_compound(
+                    line,
+                    match.start(),
+                    match.end(),
+                    matched_text,
+                )
             ):
                 continue
             suggestion = OPEN_KANJI_RULES[matched_text]
@@ -92,32 +121,30 @@ def _check_style_mixing(
 ) -> list[LintIssue]:
     endings: list[tuple[str, int, int, str]] = []
     for line_index, masked_line in enumerate(masked_lines):
-        if _is_nominal_or_label_line(masked_line):
+        if _is_nominal_or_label_line(lines[line_index]):
             continue
-        line = lines[line_index]
-        for sentence_match in _SENTENCE_PATTERN.finditer(masked_line):
+        styled_line, source_columns = _remove_emphasis_markers(masked_line)
+        for sentence_match in _SENTENCE_PATTERN.finditer(styled_line):
             sentence = sentence_match.group(0)
             polite_match = _POLITE_ENDING_PATTERN.search(sentence)
             if polite_match is not None:
                 start = sentence_match.start() + polite_match.start()
-                end = sentence_match.start() + polite_match.end()
                 endings.append((
                     "polite",
                     line_index,
-                    start,
-                    line[start:end],
+                    source_columns[start],
+                    polite_match.group(0),
                 ))
                 continue
             plain_match = _PLAIN_ENDING_PATTERN.search(sentence)
             if plain_match is None:
                 continue
             start = sentence_match.start() + plain_match.start()
-            end = sentence_match.start() + plain_match.end()
             endings.append((
                 "plain",
                 line_index,
-                start,
-                line[start:end],
+                source_columns[start],
+                plain_match.group(0),
             ))
 
     polite_count = sum(style == "polite" for style, *_ in endings)
@@ -159,6 +186,12 @@ def _check_comma_sentence_join(
     for line_index, masked_line in enumerate(masked_lines):
         line = lines[line_index]
         for match in _COMMA_SENTENCE_JOIN_PATTERN.finditer(masked_line):
+            if _is_excluded_connector(
+                masked_line,
+                match.start("connector"),
+                match.end("connector"),
+            ):
+                continue
             matched_text = line[match.start():match.end()]
             suggestion = matched_text.replace("、", "。", 1)
             issues.append(LintIssue(
@@ -214,10 +247,68 @@ def _is_nominal_or_label_line(line: str) -> bool:
     stripped = line.strip()
     if _HEADING_PATTERN.match(line):
         return True
-    has_sentence = re.search(r"[。！？!?]", stripped) is not None
     if "|" in stripped:
-        return not has_sentence
-    list_match = _LIST_ITEM_PATTERN.match(line)
-    if list_match is None:
+        return True
+    return _LIST_ITEM_PATTERN.match(line) is not None
+
+
+def _remove_emphasis_markers(line: str) -> tuple[str, list[int]]:
+    """強調記号を除いた文字列と元の列位置を返す。"""
+    characters: list[str] = []
+    source_columns: list[int] = []
+    position = 0
+    while position < len(line):
+        marker = next(
+            (
+                candidate
+                for candidate in _EMPHASIS_MARKERS
+                if line.startswith(candidate, position)
+            ),
+            None,
+        )
+        if marker is not None:
+            position += len(marker)
+            continue
+        characters.append(line[position])
+        source_columns.append(position)
+        position += 1
+    return "".join(characters), source_columns
+
+
+def _has_adjacent_kanji(line: str, start: int, end: int) -> bool:
+    """対象表記の直前または直後が漢字かを返す。"""
+    before_is_kanji = (
+        start > 0 and _KANJI_PATTERN.fullmatch(line[start - 1]) is not None
+    )
+    after_is_kanji = (
+        end < len(line) and _KANJI_PATTERN.fullmatch(line[end]) is not None
+    )
+    return before_is_kanji or after_is_kanji
+
+
+def _is_kanji_compound(
+    line: str,
+    start: int,
+    end: int,
+    matched_text: str,
+) -> bool:
+    """置換すると壊れる漢字複合語の一部かを返す。"""
+    if not _has_adjacent_kanji(line, start, end):
         return False
-    return not has_sentence
+    if matched_text == "の為":
+        return (
+            end < len(line)
+            and _KANJI_PATTERN.fullmatch(line[end]) is not None
+        )
+    return True
+
+
+def _is_excluded_connector(line: str, start: int, end: int) -> bool:
+    """列挙語など、文頭の接続語ではない一致かを返す。"""
+    if end < len(line) and line[end] == "は":
+        return True
+    suffix = line[start:]
+    return any(
+        suffix.startswith(prefix)
+        for prefix in _EXCLUDED_CONNECTOR_PREFIXES
+    )

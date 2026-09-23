@@ -55,3 +55,30 @@ def test_表記ブレのみの記事は投稿処理まで進む(tmp_path):
 
     assert code == 0
     mock_post.assert_called_once()
+
+
+def test_Qiita投稿前チェックはqiitaプロファイルを明示する(tmp_path):
+    md = tmp_path / "qiita_article.md"
+    text = "# テスト\n\nサーバと Lambda を使います。\n"
+    md.write_text(text, encoding="utf-8")
+    fake_result = QiitaResult(
+        ok=True,
+        status_code=201,
+        url="https://qiita.com/items/dummy",
+        item_id="dummy",
+    )
+
+    with patch(
+        "blog_linter.__main__.lint_markdown",
+        return_value=[],
+    ) as mock_lint, patch(
+        "blog_linter.qiita_client.load_token",
+        return_value="dummy-token",
+    ), patch(
+        "blog_linter.qiita_client.post_item",
+        return_value=fake_result,
+    ):
+        code = _run_post(["prog", "post", str(md), "--tags", "AWS"])
+
+    assert code == 0
+    mock_lint.assert_called_once_with(text, profile="qiita")
